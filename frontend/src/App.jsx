@@ -31,6 +31,12 @@ import {
   AlertCircle,
   Zap,
   Square,
+  Monitor,
+  Code,
+  Eye,
+  ExternalLink,
+  Copy,
+  Check,
 } from 'lucide-react';
 
 const API_BASE = "http://localhost:8006";
@@ -65,6 +71,9 @@ const App = () => {
   const [tools, setTools] = useState([]);
   
   const [processingSteps, setProcessingSteps] = useState([]);
+
+  const [artifactTabs, setArtifactTabs] = useState({});
+  const [copiedArtifact, setCopiedArtifact] = useState(null);
 
   const abortControllerRef = useRef(null);
   const messagesEndRef = useRef(null);
@@ -226,6 +235,98 @@ const App = () => {
     setCurrentSessionId(null);
     setMessages([]);
     setActiveTab('chat');
+  };
+
+  const extractArtifact = (content) => {
+    if (!content) return null;
+    const htmlMatch = content.match(/```html\n([\s\S]*?)```/);
+    if (htmlMatch) return { type: 'html', code: htmlMatch[1].trim(), lang: 'HTML' };
+    const svgMatch = content.match(/```svg\n([\s\S]*?)```/);
+    if (svgMatch) return {
+      type: 'html',
+      code: `<!DOCTYPE html><html><body style="margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#09090b">${svgMatch[1].trim()}</body></html>`,
+      lang: 'SVG',
+    };
+    return null;
+  };
+
+  const renderArtifactCard = (artifact, msgKey, isStreaming) => {
+    const tab = artifactTabs[msgKey] || 'preview';
+    const isCopied = copiedArtifact === msgKey;
+
+    const handleCopy = () => {
+      navigator.clipboard.writeText(artifact.code);
+      setCopiedArtifact(msgKey);
+      setTimeout(() => setCopiedArtifact(null), 2000);
+    };
+
+    const handleOpenNew = () => {
+      const blob = new Blob([artifact.code], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank');
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    };
+
+    return (
+      <div className="mt-2 rounded-2xl overflow-hidden border border-zinc-700/50 bg-zinc-950 shadow-lg">
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-2.5 bg-zinc-900 border-b border-zinc-800">
+          <div className="flex items-center space-x-3">
+            <div className="flex items-center space-x-2">
+              <Monitor size={13} className="text-orange-500" />
+              <span className="text-xs font-semibold text-zinc-300">Artifact</span>
+              <span className="text-[10px] bg-zinc-800 text-zinc-400 px-2 py-0.5 rounded-full font-mono border border-zinc-700">{artifact.lang}</span>
+            </div>
+            <div className="flex items-center bg-zinc-800 rounded-lg p-0.5">
+              {['preview', 'code'].map(t => (
+                <button
+                  key={t}
+                  onClick={() => setArtifactTabs(prev => ({ ...prev, [msgKey]: t }))}
+                  className={`flex items-center space-x-1.5 px-3 py-1 rounded-md text-[11px] font-medium transition-all ${
+                    tab === t ? 'bg-zinc-600 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'
+                  }`}
+                >
+                  {t === 'preview' ? <Eye size={11} /> : <Code size={11} />}
+                  <span>{t === 'preview' ? 'Anteprima' : 'Codice'}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex items-center space-x-0.5">
+            <button onClick={handleCopy} title="Copia codice"
+              className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-all">
+              {isCopied ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
+            </button>
+            <button onClick={handleOpenNew} title="Apri in nuova scheda"
+              className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-all">
+              <ExternalLink size={14} />
+            </button>
+          </div>
+        </div>
+
+        {/* Content */}
+        {tab === 'preview' ? (
+          isStreaming ? (
+            <div className="h-64 flex items-center justify-center text-zinc-600 text-xs space-x-2">
+              <Loader2 size={14} className="animate-spin" />
+              <span>Generazione in corso...</span>
+            </div>
+          ) : (
+            <iframe
+              srcDoc={artifact.code}
+              sandbox="allow-scripts allow-modals"
+              className="w-full border-0 bg-white"
+              style={{ height: '420px' }}
+              title={`artifact-${msgKey}`}
+            />
+          )
+        ) : (
+          <pre className="p-4 text-xs text-zinc-300 overflow-auto custom-scrollbar leading-relaxed" style={{ maxHeight: '420px' }}>
+            <code>{artifact.code}</code>
+          </pre>
+        )}
+      </div>
+    );
   };
 
   const STEP_CONFIG = {
@@ -843,41 +944,47 @@ const App = () => {
                   );
                 }
 
+                const isStreamingThis = isLoading && i === messages.filter(m => m.role !== 'tool').length - 1;
+                const artifact = msg.role === 'assistant' ? extractArtifact(msg.content) : null;
+
                 return (
-                <div key={i} className={`flex items-start space-x-4 ${msg.role === 'user' ? 'flex-row-reverse space-x-reverse' : ''}`}>
-                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 shadow-lg ${msg.role === 'assistant' ? 'bg-orange-600 shadow-orange-900/20' : 'bg-zinc-700 shadow-black/20'}`}>
-                    {msg.role === 'assistant' ? <Layers size={16} /> : <span className="text-[10px] font-bold">IO</span>}
-                  </div>
-                  <div className={`max-w-[80%] flex flex-col space-y-2`}>
-                    {msg.role === 'assistant' && msg.thinking && (
-                      <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl overflow-hidden">
-                        <button 
-                          onClick={() => toggleThinking(i)}
-                          className="w-full flex items-center space-x-2 px-3 py-2 text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors uppercase tracking-wider font-bold"
-                        >
-                          <Brain size={12} className="text-orange-500/50" />
-                          <span>Ragionamento</span>
-                          {expandedThinking[i] ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                        </button>
-                        {expandedThinking[i] && (
-                          <div className="px-3 pb-3 text-xs text-zinc-500 italic border-t border-zinc-800/50 pt-2 whitespace-pre-wrap leading-relaxed">
-                            {msg.thinking}
-                          </div>
-                        )}
+                <React.Fragment key={i}>
+                  <div className={`flex items-start space-x-4 ${msg.role === 'user' ? 'flex-row-reverse space-x-reverse' : ''}`}>
+                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 shadow-lg ${msg.role === 'assistant' ? 'bg-orange-600 shadow-orange-900/20' : 'bg-zinc-700 shadow-black/20'}`}>
+                      {msg.role === 'assistant' ? <Layers size={16} /> : <span className="text-[10px] font-bold">IO</span>}
+                    </div>
+                    <div className={`max-w-[80%] flex flex-col space-y-2`}>
+                      {msg.role === 'assistant' && msg.thinking && (
+                        <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl overflow-hidden">
+                          <button
+                            onClick={() => toggleThinking(i)}
+                            className="w-full flex items-center space-x-2 px-3 py-2 text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors uppercase tracking-wider font-bold"
+                          >
+                            <Brain size={12} className="text-orange-500/50" />
+                            <span>Ragionamento</span>
+                            {expandedThinking[i] ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                          </button>
+                          {expandedThinking[i] && (
+                            <div className="px-3 pb-3 text-xs text-zinc-500 italic border-t border-zinc-800/50 pt-2 whitespace-pre-wrap leading-relaxed">
+                              {msg.thinking}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      <div className={`p-4 rounded-2xl relative group shadow-sm ${msg.role === 'assistant' ? 'bg-zinc-900 border border-zinc-800' : 'bg-orange-600/10 border border-orange-600/20'}`}>
+                        <div className={`prose prose-sm prose-invert max-w-none`}>
+                          <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeHighlight, rehypeKatex]}>
+                            {msg.content || (isStreamingThis ? "..." : "")}
+                          </ReactMarkdown>
+                        </div>
+                        <span className="absolute bottom-2 right-3 text-[9px] text-zinc-600 opacity-0 group-hover:opacity-100 transition-opacity">
+                          {formatTime(msg.created_at)}
+                        </span>
                       </div>
-                    )}
-                    <div className={`p-4 rounded-2xl relative group shadow-sm ${msg.role === 'assistant' ? 'bg-zinc-900 border border-zinc-800' : 'bg-orange-600/10 border border-orange-600/20'}`}>
-                      <div className={`prose prose-sm prose-invert max-w-none`}>
-                        <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeHighlight, rehypeKatex]}>
-                          {msg.content || (isLoading && i === messages.length - 1 ? "..." : "")}
-                        </ReactMarkdown>
-                      </div>
-                      <span className="absolute bottom-2 right-3 text-[9px] text-zinc-600 opacity-0 group-hover:opacity-100 transition-opacity">
-                        {formatTime(msg.created_at)}
-                      </span>
                     </div>
                   </div>
-                </div>
+                  {artifact && renderArtifactCard(artifact, i, isStreamingThis)}
+                </React.Fragment>
               )})}
               {isLoading && !messages[messages.length-1]?.content && !messages[messages.length-1]?.thinking && (
                 <div className="flex items-center space-x-2 text-zinc-500 text-xs animate-pulse pl-12">
