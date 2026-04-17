@@ -89,7 +89,7 @@ const App = () => {
     if (models.length > 0 && settings.rag_embedding_model && !models.includes(settings.rag_embedding_model)) {
       setSettings(s => ({ ...s, rag_embedding_model: models[0] }));
     }
-  }, [models]);
+  }, [models, settings.rag_embedding_model]);
 
   const fetchModels = async () => {
     try {
@@ -130,7 +130,8 @@ const App = () => {
 
   const saveSettings = async () => {
     try {
-      await axios.post(`${API_BASE}/settings`, settings);
+      const res = await axios.post(`${API_BASE}/settings`, settings);
+      setSettings(res.data);
       alert('Impostazioni salvate con successo!');
     } catch (err) { console.error(err); alert('Errore nel salvataggio.'); }
   };
