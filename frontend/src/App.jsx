@@ -7,15 +7,15 @@ import rehypeHighlight from 'rehype-highlight';
 import rehypeKatex from 'rehype-katex';
 import 'highlight.js/styles/github-dark.css';
 import 'katex/dist/katex.min.css';
-import { 
-  MessageSquare, 
-  Settings, 
-  Database, 
-  Hammer, 
-  Plus, 
-  Send, 
-  Layers, 
-  Cpu, 
+import {
+  MessageSquare,
+  Settings,
+  Database,
+  Hammer,
+  Plus,
+  Send,
+  Layers,
+  Cpu,
   History,
   Loader2,
   ChevronDown,
@@ -28,7 +28,9 @@ import {
   FileText,
   Trash2,
   CheckCircle2,
-  AlertCircle
+  AlertCircle,
+  Zap,
+  Square,
 } from 'lucide-react';
 
 const API_BASE = "http://localhost:8006";
@@ -62,6 +64,9 @@ const App = () => {
   // Tools state
   const [tools, setTools] = useState([]);
   
+  const [processingSteps, setProcessingSteps] = useState([]);
+
+  const abortControllerRef = useRef(null);
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
@@ -223,6 +228,16 @@ const App = () => {
     setActiveTab('chat');
   };
 
+  const STEP_CONFIG = {
+    receiving:      { label: 'Messaggio ricevuto',   Icon: MessageSquare },
+    thinking:       { label: 'Ragionamento',          Icon: Brain },
+    generating:     { label: 'Generazione risposta',  Icon: Cpu },
+    tool_call:      { label: 'Selezione tool',        Icon: Hammer },
+    tool_executing: { label: 'Esecuzione tool',       Icon: Terminal },
+    tool_result:    { label: 'Risultato ricevuto',    Icon: CheckCircle2 },
+    done:           { label: 'Completato',            Icon: CheckCircle2 },
+  };
+
   const handleSendMessage = async () => {
     if (!inputText.trim() || !selectedModel || isLoading) return;
 
@@ -231,6 +246,16 @@ const App = () => {
     const textToSend = inputText;
     setInputText('');
     setIsLoading(true);
+    setProcessingSteps([{
+      id: 'receiving',
+      type: 'receiving',
+      label: 'Messaggio ricevuto',
+      detail: undefined,
+      status: 'done',
+    }]);
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
     try {
       const response = await fetch(`${API_BASE}/chat`, {
@@ -240,14 +265,15 @@ const App = () => {
           model: selectedModel,
           message: textToSend,
           session_id: currentSessionId
-        })
+        }),
+        signal: controller.signal,
       });
 
       if (!response.ok) throw new Error('Errore di comunicazione');
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      
+
       let assistantMsg = {
         role: 'assistant',
         content: '',
@@ -268,6 +294,23 @@ const App = () => {
           if (!line.trim()) continue;
           try {
             const data = JSON.parse(line);
+
+            // Handle processing steps sidebar
+            if (data.step) {
+              const toolNames = data.tool_calls?.map(tc => tc.function?.name).filter(Boolean) || [];
+              const detail = data.tool || (toolNames.length > 0 ? toolNames.join(', ') : undefined);
+              const cfg = STEP_CONFIG[data.step];
+              const label = cfg?.label || data.step;
+              if (data.step === 'done') {
+                setProcessingSteps(prev => prev.map(s => ({ ...s, status: 'done' })));
+              } else {
+                setProcessingSteps(prev => {
+                  const updated = prev.map(s => ({ ...s, status: 'done' }));
+                  return [...updated, { id: `${data.step}-${Date.now()}`, type: data.step, label, detail, status: 'active' }];
+                });
+              }
+            }
+
             if (data.error) {
               assistantMsg.content += `\nErrore: ${data.error}`;
             } else if (data.tool_calls) {
@@ -298,11 +341,19 @@ const App = () => {
         }
       }
     } catch (err) {
-      console.error(err);
-      setMessages(prev => [...prev, { role: 'assistant', content: "Errore di comunicazione." }]);
+      if (err.name !== 'AbortError') {
+        console.error(err);
+        setMessages(prev => [...prev, { role: 'assistant', content: "Errore di comunicazione." }]);
+      }
     } finally {
+      abortControllerRef.current = null;
       setIsLoading(false);
+      setProcessingSteps(prev => prev.map(s => ({ ...s, status: 'done' })));
     }
+  };
+
+  const handleStopStreaming = () => {
+    abortControllerRef.current?.abort();
   };
 
   const toggleThinking = (index) => {
@@ -849,24 +900,93 @@ const App = () => {
         {activeTab === 'chat' && (
           <div className="p-8 shrink-0">
             <div className="max-w-4xl mx-auto relative flex items-center">
-              <input 
-                type="text" 
+              <input
+                type="text"
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                onKeyDown={(e) => e.key === 'Enter' && !isLoading && handleSendMessage()}
                 placeholder="Invia un messaggio a Efesto..."
                 className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl py-4 px-6 pr-14 outline-none focus:border-zinc-600 transition-all shadow-2xl shadow-black/50"
               />
-              <button 
-                onClick={handleSendMessage}
-                className="absolute right-3 bg-orange-600 p-2.5 rounded-xl hover:bg-orange-500 transition-all shadow-lg shadow-orange-900/20"
-              >
-                <Send size={18} />
-              </button>
+              {isLoading ? (
+                <button
+                  onClick={handleStopStreaming}
+                  className="absolute right-3 bg-zinc-700 hover:bg-red-800 p-2.5 rounded-xl transition-all shadow-lg group"
+                  title="Interrompi generazione"
+                >
+                  <Square size={18} className="text-zinc-300 group-hover:text-red-300 fill-current" />
+                </button>
+              ) : (
+                <button
+                  onClick={handleSendMessage}
+                  className="absolute right-3 bg-orange-600 p-2.5 rounded-xl hover:bg-orange-500 transition-all shadow-lg shadow-orange-900/20"
+                >
+                  <Send size={18} />
+                </button>
+              )}
             </div>
           </div>
         )}
       </main>
+
+      {/* SIDEBAR DESTRA — processo in tempo reale */}
+      {activeTab === 'chat' && (
+        <aside className="w-48 bg-[#0d0d0f] border-l border-zinc-800/60 flex flex-col shrink-0">
+          <div className="p-4 border-b border-zinc-800/60 flex items-center space-x-2">
+            <Zap size={11} className="text-orange-500/70" />
+            <span className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Processo</span>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 custom-scrollbar">
+            {processingSteps.length === 0 ? (
+              <p className="text-[11px] text-zinc-700 italic text-center mt-8 leading-relaxed px-2">
+                In attesa di un messaggio...
+              </p>
+            ) : (
+              <div>
+                {processingSteps.map((step, idx) => {
+                  const cfg = STEP_CONFIG[step.type] || STEP_CONFIG.generating;
+                  const Icon = cfg.Icon;
+                  const isActive = step.status === 'active';
+                  const isDone = step.type === 'done';
+                  const isLast = idx === processingSteps.length - 1;
+                  return (
+                    <div key={step.id} className="flex items-start space-x-2">
+                      <div className="flex flex-col items-center flex-shrink-0">
+                        <div className={`w-5 h-5 rounded-full flex items-center justify-center mt-0.5 transition-all ${
+                          isActive
+                            ? 'bg-orange-600/20 ring-1 ring-orange-500/40'
+                            : isDone
+                              ? 'bg-green-500/10'
+                              : 'bg-zinc-900'
+                        }`}>
+                          {isActive ? (
+                            <Loader2 size={11} className="animate-spin text-orange-400" />
+                          ) : isDone ? (
+                            <CheckCircle2 size={11} className="text-green-500" />
+                          ) : (
+                            <Icon size={11} className="text-zinc-600" />
+                          )}
+                        </div>
+                        {!isLast && <div className="w-px bg-zinc-800/70 mt-0.5 mb-0.5" style={{ minHeight: '14px' }} />}
+                      </div>
+                      <div className="pb-2.5 min-w-0 flex-1">
+                        <p className={`text-[11px] font-medium leading-tight ${
+                          isActive ? 'text-orange-300' :
+                          isDone   ? 'text-green-400/70' :
+                                     'text-zinc-500'
+                        }`}>{step.label}</p>
+                        {step.detail && (
+                          <p className="text-[10px] text-zinc-600 font-mono truncate mt-0.5">{step.detail}</p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </aside>
+      )}
     </div>
   );
 };

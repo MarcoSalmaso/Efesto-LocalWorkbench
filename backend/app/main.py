@@ -288,6 +288,8 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
             full_content = ""
             full_thinking = ""
             tool_calls_raw = []
+            first_thinking = True
+            first_content = True
 
             for chunk in ollama.chat(
                 model=request.model,
@@ -300,17 +302,25 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
                     tool_calls_raw.extend(msg.tool_calls)
                 content = msg.content or ''
                 thinking = getattr(msg, 'thinking', None) or ''
+
+                if thinking and first_thinking:
+                    first_thinking = False
+                    yield json.dumps({"step": "thinking"}) + "\n"
+                if content and first_content:
+                    first_content = False
+                    yield json.dumps({"step": "generating"}) + "\n"
+
                 if content: full_content += content
                 if thinking: full_thinking += thinking
                 if content or thinking:
                     yield json.dumps({"content": content, "thinking": thinking, "session_id": session_id}) + "\n"
 
             if tool_calls_raw:
-                # Notifica il frontend dei tool call per visualizzazione real-time
-                yield json.dumps({"tool_calls": [
+                tool_calls_for_stream = [
                     {"function": {"name": tc.function.name, "arguments": tc.function.arguments}}
                     for tc in tool_calls_raw
-                ]}) + "\n"
+                ]
+                yield json.dumps({"tool_calls": tool_calls_for_stream, "step": "tool_call"}) + "\n"
 
                 # Formato per DB (con id tracciabile)
                 tool_calls_for_db = [
@@ -343,7 +353,9 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
                 })
 
                 for tc_db, tc_ollama in zip(tool_calls_for_db, tool_calls_for_ollama):
-                    tool = registry.get_tool(tc_ollama['function']['name'])
+                    tool_name = tc_ollama['function']['name']
+                    yield json.dumps({"step": "tool_executing", "tool": tool_name}) + "\n"
+                    tool = registry.get_tool(tool_name)
                     if tool:
                         tool_output = await tool.execute(**tc_ollama['function']['arguments'])
                         with Session(engine) as save_db:
@@ -354,6 +366,7 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
                                 tool_call_id=tc_db['id'],
                             ))
                             save_db.commit()
+                        yield json.dumps({"step": "tool_result", "tool": tool_name}) + "\n"
                         ollama_messages.append({'role': 'tool', 'content': str(tool_output)})
 
                 # Messaggio sintetico per ancorare il modello alla domanda originale.
@@ -367,6 +380,9 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
                 # Seconda chiamata: reset content e thinking
                 full_content = ""
                 full_thinking = ""
+                first_thinking = True
+
+                yield json.dumps({"step": "generating"}) + "\n"
 
                 for chunk in ollama.chat(
                     model=request.model,
@@ -376,6 +392,9 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
                     msg = chunk.message
                     content = msg.content or ''
                     thinking = getattr(msg, 'thinking', None) or ''
+                    if thinking and first_thinking:
+                        first_thinking = False
+                        yield json.dumps({"step": "thinking"}) + "\n"
                     if content: full_content += content
                     if thinking: full_thinking += thinking
                     if content or thinking:
@@ -389,6 +408,8 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
                     thinking=full_thinking or None,
                 ))
                 save_db.commit()
+
+            yield json.dumps({"step": "done"}) + "\n"
 
         except Exception as e:
             yield json.dumps({"error": str(e)}) + "\n"
