@@ -141,3 +141,10 @@ Il tool sarà immediatamente visibile nella pagina **Strumenti** dell'interfacci
 ---
 
 *Efesto — Costruisci il tuo Olimpo Digitale.*
+
+---
+
+## Idee di sviluppo
+
+- **Utilizzo di script python per analisi dati**: permettergli di utilizzare script che richiedono solamente un input per fare analisi o qualsiasi altra cosa.
+- **MCP locali**: utilizzo di MCP locali.
