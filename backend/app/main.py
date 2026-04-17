@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, File, UploadFile
+from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlmodel import SQLModel, Session, create_engine, select
@@ -11,7 +11,7 @@ import asyncio
 import uuid
 import numpy as np
 from datetime import datetime, timezone
-from .models import ModelConfig, ToolDefinition, ChatSession, ChatMessage, SystemSettings
+from .models import ModelConfig, ToolDefinition, ChatSession, ChatMessage, SystemSettings, KnowledgeChunk
 
 sqlite_file_name = "efesto.db"
 sqlite_url = f"sqlite:///{sqlite_file_name}"
@@ -21,10 +21,11 @@ engine = create_engine(sqlite_url, connect_args={"check_same_thread": False})
 def migrate_db():
     """Aggiunge colonne mancanti senza perdere dati esistenti."""
     migrations = [
-        ("rag_embedding_model", "TEXT NOT NULL DEFAULT 'qwen3-embedding:4b'"),
-        ("rag_chunk_size",      "INTEGER NOT NULL DEFAULT 800"),
-        ("rag_batch_size",      "INTEGER NOT NULL DEFAULT 8"),
-        ("rag_search_limit",    "INTEGER NOT NULL DEFAULT 3"),
+        ("rag_embedding_model",    "TEXT NOT NULL DEFAULT 'qwen3-embedding:4b'"),
+        ("rag_chunk_size",         "INTEGER NOT NULL DEFAULT 800"),
+        ("rag_batch_size",         "INTEGER NOT NULL DEFAULT 8"),
+        ("rag_search_limit",       "INTEGER NOT NULL DEFAULT 3"),
+        ("active_embedding_model", "TEXT NOT NULL DEFAULT ''"),
     ]
     with engine.connect() as conn:
         for col, definition in migrations:
@@ -33,6 +34,15 @@ def migrate_db():
                 conn.commit()
             except Exception:
                 pass  # Colonna già presente
+        # Per installazioni esistenti: evita falsi warning sincronizzando active = rag
+        try:
+            conn.execute(text(
+                "UPDATE systemsettings SET active_embedding_model = rag_embedding_model "
+                "WHERE active_embedding_model = ''"
+            ))
+            conn.commit()
+        except Exception:
+            pass
 
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
@@ -165,13 +175,27 @@ async def upload_knowledge(file: UploadFile = File(...)):
         loop = asyncio.get_event_loop()
         batch_size = rag_manager.batch_size
         try:
+            # Salva i chunk testuali in SQLite (fonte di verità)
+            with Session(engine) as db:
+                for existing in db.exec(select(KnowledgeChunk).where(KnowledgeChunk.filename == filename)).all():
+                    db.delete(existing)
+                db.commit()
+                for idx, chunk in enumerate(chunks):
+                    db.add(KnowledgeChunk(
+                        filename=filename,
+                        chunk_index=idx,
+                        text=chunk,
+                        metadata_json=json.dumps({"filename": filename, "source": "upload",
+                                                   "chunk": idx, "total_chunks": total}),
+                    ))
+                db.commit()
+
             done = 0
             for batch_start in range(0, total, batch_size):
                 batch = chunks[batch_start:batch_start + batch_size]
                 embeddings = await loop.run_in_executor(None, rag_manager._get_embeddings_batch, batch)
 
                 if batch_start == 0:
-                    # Detect actual embedding dim and validate/create table
                     dim = len(embeddings[0])
                     rag_manager.ensure_table_with_dim(dim)
 
@@ -188,6 +212,14 @@ async def upload_knowledge(file: UploadFile = File(...)):
                 table.add(rows)
                 done += len(batch)
                 yield f"data: {json.dumps({'current': done, 'total': total})}\n\n"
+
+            with Session(engine) as db:
+                settings = db.exec(select(SystemSettings)).first()
+                if settings:
+                    settings.active_embedding_model = rag_manager.embedding_model
+                    db.add(settings)
+                    db.commit()
+
             yield f"data: {json.dumps({'status': 'success', 'filename': filename, 'total': total})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'status': 'error', 'detail': str(e)})}\n\n"
@@ -205,6 +237,10 @@ async def list_knowledge():
 async def delete_knowledge(filename: str):
     try:
         rag_manager.delete_by_filename(filename)
+        with Session(engine) as db:
+            for c in db.exec(select(KnowledgeChunk).where(KnowledgeChunk.filename == filename)).all():
+                db.delete(c)
+            db.commit()
         return {"status": "success", "filename": filename}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -213,6 +249,10 @@ async def delete_knowledge(filename: str):
 async def reset_knowledge():
     try:
         rag_manager.reset_table()
+        with Session(engine) as db:
+            for c in db.exec(select(KnowledgeChunk)).all():
+                db.delete(c)
+            db.commit()
         return {"status": "success", "message": "Knowledge Base svuotata."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -224,6 +264,150 @@ async def search_knowledge(query: str, limit: int = 5):
         return results
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/knowledge/reembed")
+async def reembed_knowledge():
+    """Rigenera tutti i vettori LanceDB dai chunk salvati in SQLite."""
+    async def event_stream():
+        loop = asyncio.get_event_loop()
+        try:
+            with Session(engine) as db:
+                chunks = db.exec(
+                    select(KnowledgeChunk).order_by(KnowledgeChunk.filename, KnowledgeChunk.chunk_index)
+                ).all()
+
+            total = len(chunks)
+            if total == 0:
+                yield f"data: {json.dumps({'status': 'error', 'detail': 'Nessun chunk salvato. Ricarica i documenti prima di rigenerare i vettori.'})}\n\n"
+                return
+
+            rag_manager.reset_table()
+            batch_size = rag_manager.batch_size
+            done = 0
+
+            for batch_start in range(0, total, batch_size):
+                batch = chunks[batch_start:batch_start + batch_size]
+                embeddings = await loop.run_in_executor(
+                    None, rag_manager._get_embeddings_batch, [c.text for c in batch]
+                )
+                if batch_start == 0:
+                    rag_manager.ensure_table_with_dim(len(embeddings[0]))
+                table = rag_manager.db.open_table("knowledge")
+                table.add([{
+                    "vector": np.array(emb, dtype=np.float32),
+                    "text": c.text,
+                    "metadata": c.metadata_json,
+                } for c, emb in zip(batch, embeddings)])
+                done += len(batch)
+                yield f"data: {json.dumps({'current': done, 'total': total})}\n\n"
+
+            with Session(engine) as db:
+                settings = db.exec(select(SystemSettings)).first()
+                if settings:
+                    settings.active_embedding_model = rag_manager.embedding_model
+                    db.add(settings)
+                    db.commit()
+
+            yield f"data: {json.dumps({'status': 'success', 'total': total})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'status': 'error', 'detail': str(e)})}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+@app.get("/knowledge/export")
+async def export_knowledge():
+    """Esporta tutti i chunk testuali come JSON (backup portabile)."""
+    with Session(engine) as db:
+        chunks = db.exec(
+            select(KnowledgeChunk).order_by(KnowledgeChunk.filename, KnowledgeChunk.chunk_index)
+        ).all()
+        settings = db.exec(select(SystemSettings)).first()
+
+    export_data = {
+        "version": 1,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "embedding_model": settings.rag_embedding_model if settings else "",
+        "chunks": [
+            {"filename": c.filename, "chunk_index": c.chunk_index,
+             "text": c.text, "metadata_json": c.metadata_json}
+            for c in chunks
+        ],
+    }
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Response(
+        content=json.dumps(export_data, ensure_ascii=False, indent=2),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="efesto_kb_{timestamp}.json"'},
+    )
+
+@app.post("/knowledge/import")
+async def import_knowledge(file: UploadFile = File(...)):
+    """Importa un backup JSON, salva i chunk in SQLite e rigenera i vettori."""
+    content = await file.read()
+    try:
+        data = json.loads(content)
+    except Exception:
+        raise HTTPException(status_code=400, detail="File non valido. Deve essere un JSON esportato da Efesto.")
+    if "chunks" not in data:
+        raise HTTPException(status_code=400, detail="Formato non valido: campo 'chunks' mancante.")
+
+    chunks_data = data["chunks"]
+
+    async def event_stream():
+        loop = asyncio.get_event_loop()
+        try:
+            with Session(engine) as db:
+                for c in db.exec(select(KnowledgeChunk)).all():
+                    db.delete(c)
+                db.commit()
+                for item in chunks_data:
+                    db.add(KnowledgeChunk(
+                        filename=item["filename"],
+                        chunk_index=item["chunk_index"],
+                        text=item["text"],
+                        metadata_json=item.get("metadata_json", "{}"),
+                    ))
+                db.commit()
+
+            total = len(chunks_data)
+            yield f"data: {json.dumps({'phase': 'saved', 'total': total})}\n\n"
+
+            rag_manager.reset_table()
+            with Session(engine) as db:
+                chunks = db.exec(
+                    select(KnowledgeChunk).order_by(KnowledgeChunk.filename, KnowledgeChunk.chunk_index)
+                ).all()
+
+            batch_size = rag_manager.batch_size
+            done = 0
+            for batch_start in range(0, total, batch_size):
+                batch = chunks[batch_start:batch_start + batch_size]
+                embeddings = await loop.run_in_executor(
+                    None, rag_manager._get_embeddings_batch, [c.text for c in batch]
+                )
+                if batch_start == 0:
+                    rag_manager.ensure_table_with_dim(len(embeddings[0]))
+                table = rag_manager.db.open_table("knowledge")
+                table.add([{
+                    "vector": np.array(emb, dtype=np.float32),
+                    "text": c.text,
+                    "metadata": c.metadata_json,
+                } for c, emb in zip(batch, embeddings)])
+                done += len(batch)
+                yield f"data: {json.dumps({'phase': 'embedding', 'current': done, 'total': total})}\n\n"
+
+            with Session(engine) as db:
+                settings = db.exec(select(SystemSettings)).first()
+                if settings:
+                    settings.active_embedding_model = rag_manager.embedding_model
+                    db.add(settings)
+                    db.commit()
+
+            yield f"data: {json.dumps({'status': 'success', 'total': total})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'status': 'error', 'detail': str(e)})}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 # --- Tools ---
 from .tools import registry

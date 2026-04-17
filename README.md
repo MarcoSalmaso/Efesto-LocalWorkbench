@@ -7,9 +7,14 @@ Efesto è un'applicazione **local-first** per interagire con modelli AI locali (
 ## Funzionalità
 
 - **Chat con streaming** — risposte in tempo reale con supporto al _thinking_ (chain-of-thought) dei modelli che lo supportano
-- **Tool calling** — il modello può invocare strumenti autonomamente durante la conversazione; le chiamate sono visibili in chat come tag
+- **Stop generazione** — interrompi la risposta del modello in qualsiasi momento con un click
+- **Sidebar processo** — visualizzazione grafica in tempo reale dei passi del modello (ragionamento, tool call, esecuzione, risposta)
+- **Artifacts** — blocchi HTML/SVG generati dal modello vengono renderizzati in un iframe interattivo, con tab Anteprima/Codice e apertura in nuova scheda
+- **Tool calling** — il modello può invocare strumenti autonomamente durante la conversazione
 - **RAG locale** — carica documenti (PDF, DOCX, TXT, MD, CSV, JSON, HTML) nella Knowledge Base; vengono suddivisi in chunk, embeddati con un modello Ollama e cercati semanticamente via LanceDB
-- **Knowledge Base** — gestione documenti con upload multi-formato, progress dell'embedding chunk-by-chunk, eliminazione per file e reset completo
+- **Knowledge Base resiliente** — i chunk testuali sono salvati in SQLite separatamente dai vettori LanceDB: cambiare modello di embedding non richiede di ricaricare i file originali
+- **Esporta / Importa KB** — backup portabile della Knowledge Base in JSON; importazione con re-embedding automatico su qualsiasi macchina
+- **Re-embedding automatico** — warning visivo quando il modello di embedding cambia, con bottone per rigenerare tutti i vettori dai chunk salvati
 - **Sessioni persistenti** — le conversazioni sono salvate in SQLite e ricaricabili dalla sidebar
 - **Rendering Markdown + LaTeX** — le risposte supportano GFM, syntax highlighting e formule matematiche (KaTeX)
 - **Impostazioni configurabili** — system prompt, lunghezza contesto, modello di embedding, max chunk length, embedding batch size, top-k retrieval
@@ -21,8 +26,8 @@ Efesto è un'applicazione **local-first** per interagire con modelli AI locali (
 | Layer | Tecnologie |
 |---|---|
 | Backend | Python 3.9+, FastAPI, SQLModel, Ollama SDK, LanceDB, PyArrow |
-| Frontend | React 18, Vite, Tailwind CSS, Axios, react-markdown, KaTeX |
-| Database | SQLite (chat e config), LanceDB (vettori embedding) |
+| Frontend | React 19, Vite, Tailwind CSS, Axios, react-markdown, KaTeX, Lucide React |
+| Database | SQLite (chat, config, chunk KB), LanceDB (vettori embedding) |
 | AI | Ollama (modelli locali), embedding con `ollama.embed()` batch API |
 
 ### Strumenti disponibili per il modello
@@ -42,7 +47,7 @@ Efesto/
 ├── backend/
 │   ├── app/
 │   │   ├── main.py          # FastAPI app, endpoints, chat streaming
-│   │   ├── models.py        # Schema SQLite (SQLModel)
+│   │   ├── models.py        # Schema SQLite: settings, sessioni, chunk KB
 │   │   ├── rag.py           # RagManager: chunking, embedding, ricerca LanceDB
 │   │   ├── extractors.py    # Estrazione testo da PDF, DOCX, CSV, JSON, HTML
 │   │   └── tools/
@@ -52,7 +57,7 @@ Efesto/
 │   │       ├── file_reader.py
 │   │       └── python_executor.py
 │   ├── storage/vectors/     # Database vettoriale LanceDB (gitignored)
-│   ├── efesto.db            # SQLite (gitignored)
+│   ├── efesto.db            # SQLite: chat, settings, chunk KB (gitignored)
 │   └── requirements.txt
 └── frontend/
     ├── src/
@@ -69,8 +74,6 @@ Efesto/
 
 ### Prerequisiti
 
-Assicurati di avere installato:
-
 - [Ollama](https://ollama.com) — runtime per i modelli locali
 - **Python 3.9+** — `python3 --version`
 - **Node.js 18+** — `node --version`
@@ -84,14 +87,10 @@ cd Efesto
 
 ### 2. Scarica i modelli Ollama
 
-Efesto ha bisogno di almeno un modello per la chat e uno per gli embedding:
-
 ```bash
-ollama pull qwen3.5:9b          # modello chat con tool calling (consigliato)
-ollama pull qwen3-embedding:4b  # modello di embedding per il RAG (default)
+ollama pull qwen3:8b               # modello chat con tool calling (consigliato)
+ollama pull qwen3-embedding:4b     # modello di embedding per il RAG (default)
 ```
-
-Puoi usare qualsiasi modello Ollama con supporto al tool calling (es. `llama3.1:8b`, `gemma4`). Il modello di embedding è configurabile dalle impostazioni.
 
 ### 3. Avvia il backend
 
@@ -103,11 +102,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8006
 ```
 
-Al primo avvio vengono creati automaticamente il database SQLite (`efesto.db`) e la cartella per i vettori LanceDB (`storage/vectors/`).
-
 ### 4. Avvia il frontend
-
-In un secondo terminale:
 
 ```bash
 cd frontend
@@ -115,11 +110,9 @@ npm install
 npm run dev
 ```
 
-Apri il browser su **`http://localhost:5173`**.
+Apri **`http://localhost:5173`**.
 
 ### Avvii successivi
-
-Una volta completata l'installazione, per riavviare basta:
 
 ```bash
 # Terminale 1 — backend
@@ -131,20 +124,46 @@ cd frontend && npm run dev
 
 ---
 
+## Knowledge Base: backup e migrazione
+
+### Esportare
+
+Dal tab **Database** → **Esporta**: scarica `efesto_kb_YYYYMMDD_HHMMSS.json` con tutti i chunk testuali, indipendente dal modello di embedding.
+
+### Importare su una nuova macchina
+
+1. Avvia Efesto sulla nuova macchina
+2. **Database** → **Importa** → seleziona il file JSON
+3. I chunk vengono salvati e i vettori rigenerati automaticamente
+
+### Cambiare modello di embedding
+
+1. **Impostazioni** → cambia _Modello di Embedding_ → Salva
+2. Torna in **Database**: compare un warning giallo con il pulsante **Rigenera Vettori**
+3. Clicca — Efesto rilegge i chunk da SQLite e rigenera i vettori, senza ricaricare i file originali
+
+---
+
 ## Aggiungere un nuovo strumento
 
 1. Crea un file in `backend/app/tools/`, estendi `BaseTool` e implementa `name`, `description`, `parameters_schema` e `execute()`
 2. Registralo in `backend/app/tools/__init__.py` con `registry.register_tool(MyTool())`
 
-Il tool sarà immediatamente visibile nella pagina **Strumenti** dell'interfaccia e disponibile al modello nelle chat.
+---
+
+## API principali
+
+| Metodo | Endpoint | Descrizione |
+|---|---|---|
+| `POST` | `/chat` | Chat streaming con tool calling |
+| `GET` | `/knowledge/export` | Esporta KB come JSON |
+| `POST` | `/knowledge/import` | Importa JSON + re-embedding automatico |
+| `POST` | `/knowledge/reembed` | Rigenera vettori dai chunk salvati |
+| `POST` | `/knowledge/upload` | Carica e indicizza un documento |
+| `DELETE` | `/knowledge/{filename}` | Rimuove un documento |
+| `GET` | `/settings` | Legge la configurazione |
+| `POST` | `/settings` | Aggiorna la configurazione |
 
 ---
 
 *Efesto — Costruisci il tuo Olimpo Digitale.*
-
----
-
-## Idee di sviluppo
-
-- **Utilizzo di script python per analisi dati**: permettergli di utilizzare script che richiedono solamente un input per fare analisi o qualsiasi altra cosa.
-- **MCP locali**: utilizzo di MCP locali.

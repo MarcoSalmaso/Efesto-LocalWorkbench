@@ -9,10 +9,19 @@ class SystemSettings(SQLModel, table=True):
     system_prompt: str = Field(default="Sei Efesto, un assistente AI utile e conciso.", sa_column=Column(Text))
     context_length: int = Field(default=10)
     rag_embedding_model: str = Field(default="qwen3-embedding:4b")
+    active_embedding_model: str = Field(default="")
     rag_chunk_size: int = Field(default=800)
     rag_batch_size: int = Field(default=8)
     rag_search_limit: int = Field(default=3)
     last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class KnowledgeChunk(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    filename: str = Field(index=True)
+    chunk_index: int
+    text: str = Field(sa_column=Column(Text))
+    metadata_json: str = Field(default="{}", sa_column=Column(Text))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class ModelConfig(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)

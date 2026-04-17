@@ -37,6 +37,9 @@ import {
   ExternalLink,
   Copy,
   Check,
+  Download,
+  RefreshCw,
+  TriangleAlert,
 } from 'lucide-react';
 
 const API_BASE = "http://localhost:8006";
@@ -74,6 +77,8 @@ const App = () => {
 
   const [artifactTabs, setArtifactTabs] = useState({});
   const [copiedArtifact, setCopiedArtifact] = useState(null);
+  const [reembedStatus, setReembedStatus] = useState({ status: 'idle', message: '' });
+  const importFileInputRef = useRef(null);
 
   const abortControllerRef = useRef(null);
   const messagesEndRef = useRef(null);
@@ -478,6 +483,81 @@ const App = () => {
     });
   };
 
+  const handleExport = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/knowledge/export`);
+      if (!res.ok) throw new Error('Errore export');
+      const blob = await res.blob();
+      const disposition = res.headers.get('Content-Disposition') || '';
+      const match = disposition.match(/filename="([^"]+)"/);
+      const filename = match ? match[1] : 'efesto_kb.json';
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (err) { alert('Errore durante l\'esportazione.'); console.error(err); }
+  };
+
+  const handleImport = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    event.target.value = '';
+    setReembedStatus({ status: 'loading', current: 0, total: null, message: 'Importazione in corso...' });
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      const response = await fetch(`${API_BASE}/knowledge/import`, { method: 'POST', body: formData });
+      if (!response.ok) { const e = await response.json(); setReembedStatus({ status: 'error', message: e.detail }); return; }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        for (const line of decoder.decode(value).split('\n').filter(l => l.startsWith('data: '))) {
+          const data = JSON.parse(line.slice(6));
+          if (data.status === 'success') {
+            setReembedStatus({ status: 'success', message: `Importati ${data.total} chunk e vettori rigenerati.` });
+            fetchKnowledgeBase();
+            fetchSettings();
+            setTimeout(() => setReembedStatus({ status: 'idle' }), 5000);
+          } else if (data.status === 'error') {
+            setReembedStatus({ status: 'error', message: data.detail });
+          } else if (data.phase === 'saved') {
+            setReembedStatus({ status: 'loading', current: 0, total: data.total, message: 'Chunk salvati, embedding in corso...' });
+          } else if (data.phase === 'embedding') {
+            setReembedStatus({ status: 'loading', current: data.current, total: data.total, message: 'Embedding in corso...' });
+          }
+        }
+      }
+    } catch (err) { setReembedStatus({ status: 'error', message: 'Errore di connessione.' }); console.error(err); }
+  };
+
+  const handleReembed = async () => {
+    setReembedStatus({ status: 'loading', current: 0, total: null, message: 'Rigenerazione vettori in corso...' });
+    try {
+      const response = await fetch(`${API_BASE}/knowledge/reembed`, { method: 'POST' });
+      if (!response.ok) { const e = await response.json(); setReembedStatus({ status: 'error', message: e.detail }); return; }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        for (const line of decoder.decode(value).split('\n').filter(l => l.startsWith('data: '))) {
+          const data = JSON.parse(line.slice(6));
+          if (data.status === 'success') {
+            setReembedStatus({ status: 'success', message: `Vettori rigenerati per ${data.total} chunk.` });
+            fetchSettings();
+            setTimeout(() => setReembedStatus({ status: 'idle' }), 5000);
+          } else if (data.status === 'error') {
+            setReembedStatus({ status: 'error', message: data.detail });
+          } else {
+            setReembedStatus({ status: 'loading', current: data.current, total: data.total, message: 'Embedding in corso...' });
+          }
+        }
+      }
+    } catch (err) { setReembedStatus({ status: 'error', message: 'Errore di connessione.' }); console.error(err); }
+  };
+
   const renderDatabase = () => (
     <div className="max-w-4xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex justify-between items-end">
@@ -488,33 +568,81 @@ const App = () => {
           </h3>
           <p className="text-zinc-500 text-sm">Gestisci i documenti utilizzati da Efesto per il RAG.</p>
         </div>
-        
+
         <div className="flex items-center space-x-2">
-          <input
-            type="file"
-            className="hidden"
-            ref={fileInputRef}
-            onChange={handleFileUpload}
-            accept=".txt,.md,.pdf,.docx,.csv,.json,.html,.htm"
-          />
+          <input type="file" className="hidden" ref={fileInputRef} onChange={handleFileUpload}
+            accept=".txt,.md,.pdf,.docx,.csv,.json,.html,.htm" />
+          <input type="file" className="hidden" ref={importFileInputRef} onChange={handleImport}
+            accept=".json" />
+
           {knowledgeBase.length > 0 && (
-            <button
-              onClick={handleResetKnowledge}
-              className="bg-zinc-800 hover:bg-red-900/50 border border-zinc-700 hover:border-red-700/50 text-zinc-400 hover:text-red-400 px-4 py-2 rounded-xl font-bold flex items-center space-x-2 transition-all text-sm"
-            >
-              <Trash2 size={16} />
-              <span>Svuota tutto</span>
-            </button>
+            <>
+              <button onClick={handleExport}
+                className="bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-400 hover:text-zinc-200 px-4 py-2 rounded-xl font-bold flex items-center space-x-2 transition-all text-sm">
+                <Download size={16} /><span>Esporta</span>
+              </button>
+              <button onClick={handleResetKnowledge}
+                className="bg-zinc-800 hover:bg-red-900/50 border border-zinc-700 hover:border-red-700/50 text-zinc-400 hover:text-red-400 px-4 py-2 rounded-xl font-bold flex items-center space-x-2 transition-all text-sm">
+                <Trash2 size={16} /><span>Svuota tutto</span>
+              </button>
+            </>
           )}
-          <button
-            onClick={() => fileInputRef.current.click()}
-            className="bg-orange-600 hover:bg-orange-500 px-4 py-2 rounded-xl font-bold flex items-center space-x-2 transition-all text-sm"
-          >
-            <Upload size={16} />
-            <span>Carica Documento</span>
+          <button onClick={() => importFileInputRef.current.click()}
+            className="bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-400 hover:text-zinc-200 px-4 py-2 rounded-xl font-bold flex items-center space-x-2 transition-all text-sm">
+            <Upload size={16} /><span>Importa</span>
+          </button>
+          <button onClick={() => fileInputRef.current.click()}
+            className="bg-orange-600 hover:bg-orange-500 px-4 py-2 rounded-xl font-bold flex items-center space-x-2 transition-all text-sm">
+            <Upload size={16} /><span>Carica Documento</span>
           </button>
         </div>
       </div>
+
+      {/* Warning modello embedding cambiato */}
+      {settings.active_embedding_model && settings.active_embedding_model !== settings.rag_embedding_model && (
+        <div className="p-4 rounded-xl border border-yellow-500/30 bg-yellow-500/10 flex items-start justify-between space-x-4">
+          <div className="flex items-start space-x-3">
+            <TriangleAlert size={18} className="text-yellow-400 mt-0.5 flex-shrink-0" />
+            <div>
+              <p className="text-sm font-semibold text-yellow-300">Modello di embedding cambiato</p>
+              <p className="text-xs text-yellow-500 mt-0.5">
+                I vettori esistenti sono stati creati con <span className="font-mono">{settings.active_embedding_model}</span>, ma il modello attuale è <span className="font-mono">{settings.rag_embedding_model}</span>. La ricerca RAG potrebbe dare risultati sbagliati.
+              </p>
+            </div>
+          </div>
+          <button onClick={handleReembed} disabled={reembedStatus.status === 'loading'}
+            className="flex-shrink-0 bg-yellow-500/20 hover:bg-yellow-500/30 border border-yellow-500/40 text-yellow-300 px-4 py-2 rounded-xl font-bold flex items-center space-x-2 transition-all text-sm disabled:opacity-50">
+            <RefreshCw size={15} className={reembedStatus.status === 'loading' ? 'animate-spin' : ''} />
+            <span>Rigenera Vettori</span>
+          </button>
+        </div>
+      )}
+
+      {/* Progresso re-embed / import */}
+      {reembedStatus.status !== 'idle' && (
+        <div className={`p-4 rounded-xl border space-y-2 ${
+          reembedStatus.status === 'loading' ? 'bg-blue-500/10 border-blue-500/20 text-blue-400' :
+          reembedStatus.status === 'success' ? 'bg-green-500/10 border-green-500/20 text-green-400' :
+          'bg-red-500/10 border-red-500/20 text-red-400'
+        }`}>
+          <div className="flex items-center space-x-3">
+            {reembedStatus.status === 'loading' ? <Loader2 size={18} className="animate-spin flex-shrink-0" /> :
+             reembedStatus.status === 'success' ? <CheckCircle2 size={18} className="flex-shrink-0" /> :
+             <AlertCircle size={18} className="flex-shrink-0" />}
+            <span className="text-sm font-medium">
+              {reembedStatus.status === 'loading' && reembedStatus.total
+                ? `${reembedStatus.message} — ${reembedStatus.current}/${reembedStatus.total} chunk`
+                : reembedStatus.message}
+            </span>
+          </div>
+          {reembedStatus.status === 'loading' && reembedStatus.total && (
+            <div className="w-full bg-blue-900/30 rounded-full h-1.5 overflow-hidden">
+              <div className="bg-blue-400 h-full rounded-full transition-all duration-300"
+                style={{ width: `${(reembedStatus.current / reembedStatus.total) * 100}%` }} />
+            </div>
+          )}
+        </div>
+      )}
 
       {uploadStatus.status !== 'idle' && (
         <div className={`p-4 rounded-xl border space-y-2 ${
