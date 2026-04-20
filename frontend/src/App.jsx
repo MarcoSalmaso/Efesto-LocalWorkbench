@@ -40,6 +40,12 @@ import {
   Download,
   RefreshCw,
   TriangleAlert,
+  Search,
+  X,
+  Pencil,
+  Info,
+  Thermometer,
+  SlidersHorizontal,
 } from 'lucide-react';
 
 const API_BASE = "http://localhost:8006";
@@ -63,6 +69,9 @@ const App = () => {
     rag_chunk_size: 800,
     rag_batch_size: 8,
     rag_search_limit: 3,
+    gen_temperature: 0.8,
+    gen_top_p: 0.9,
+    gen_num_predict: -1,
   });
 
   // RAG States
@@ -74,11 +83,24 @@ const App = () => {
   const [tools, setTools] = useState([]);
   
   const [processingSteps, setProcessingSteps] = useState([]);
+  const [tokenStats, setTokenStats] = useState({ count: 0, rate: null, elapsed: null, active: false });
+  const tokenStartRef = useRef(null);
 
   const [artifactTabs, setArtifactTabs] = useState({});
   const [copiedArtifact, setCopiedArtifact] = useState(null);
   const [reembedStatus, setReembedStatus] = useState({ status: 'idle', message: '' });
   const importFileInputRef = useRef(null);
+
+  const [toasts, setToasts] = useState([]);
+  const [editingSessionId, setEditingSessionId] = useState(null);
+  const [editingTitle, setEditingTitle] = useState('');
+  const [sessionSearch, setSessionSearch] = useState('');
+  const [searchResults, setSearchResults] = useState(null); // null = non attiva
+  const [isSearching, setIsSearching] = useState(false);
+  const searchDebounceRef = useRef(null);
+  const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
+  const [runningModels, setRunningModels] = useState([]);
+  const modelDropdownRef = useRef(null);
 
   const abortControllerRef = useRef(null);
   const messagesEndRef = useRef(null);
@@ -96,6 +118,14 @@ const App = () => {
     fetchSessions();
     fetchSettings();
     fetchTools();
+    fetchRunningModels();
+
+    const es = new EventSource(`${API_BASE}/ollama/ps/stream`);
+    es.onmessage = (e) => {
+      try { setRunningModels(JSON.parse(e.data).models || []); } catch {}
+    };
+    es.onerror = () => {};
+    return () => es.close();
   }, []);
 
   useEffect(() => {
@@ -105,10 +135,44 @@ const App = () => {
   }, [activeTab]);
 
   useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target)) {
+        setIsModelDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    clearTimeout(searchDebounceRef.current);
+    if (!sessionSearch.trim()) {
+      setSearchResults(null);
+      setIsSearching(false);
+      return;
+    }
+    setIsSearching(true);
+    searchDebounceRef.current = setTimeout(async () => {
+      try {
+        const res = await axios.get(`${API_BASE}/sessions/search`, { params: { q: sessionSearch } });
+        setSearchResults(res.data);
+      } catch { setSearchResults([]); }
+      finally { setIsSearching(false); }
+    }, 300);
+  }, [sessionSearch]);
+
+  useEffect(() => {
     if (models.length > 0 && settings.rag_embedding_model && !models.includes(settings.rag_embedding_model)) {
       setSettings(s => ({ ...s, rag_embedding_model: models[0] }));
     }
   }, [models, settings.rag_embedding_model]);
+
+  const fetchRunningModels = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/ollama/ps`);
+      setRunningModels(res.data.models || []);
+    } catch { setRunningModels([]); }
+  };
 
   const fetchModels = async () => {
     try {
@@ -151,8 +215,8 @@ const App = () => {
     try {
       const res = await axios.post(`${API_BASE}/settings`, settings);
       setSettings(res.data);
-      alert('Impostazioni salvate con successo!');
-    } catch (err) { console.error(err); alert('Errore nel salvataggio.'); }
+      addToast('Impostazioni salvate con successo!', 'success');
+    } catch (err) { console.error(err); addToast('Errore nel salvataggio.', 'error'); }
   };
 
   const handleFileUpload = async (event) => {
@@ -208,8 +272,9 @@ const App = () => {
     try {
       await axios.delete(`${API_BASE}/knowledge/${encodeURIComponent(filename)}`);
       fetchKnowledgeBase();
+      addToast(`"${filename}" rimosso dalla Knowledge Base.`, 'success');
     } catch (err) {
-      alert('Errore durante la rimozione del documento.');
+      addToast('Errore durante la rimozione del documento.', 'error');
       console.error(err);
     }
   };
@@ -219,8 +284,9 @@ const App = () => {
     try {
       await axios.delete(`${API_BASE}/knowledge`);
       fetchKnowledgeBase();
+      addToast('Knowledge Base svuotata.', 'success');
     } catch (err) {
-      alert('Errore durante il reset della Knowledge Base.');
+      addToast('Errore durante il reset della Knowledge Base.', 'error');
       console.error(err);
     }
   };
@@ -273,22 +339,22 @@ const App = () => {
     };
 
     return (
-      <div className="mt-2 rounded-2xl overflow-hidden border border-zinc-700/50 bg-zinc-950 shadow-lg">
+      <div className="mt-2 rounded-2xl overflow-hidden border border-zinc-700/50 bg-zinc-800/50 shadow-lg">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-2.5 bg-zinc-900 border-b border-zinc-800">
+        <div className="flex items-center justify-between px-4 py-2.5 bg-zinc-700/40 border-b border-zinc-700/50">
           <div className="flex items-center space-x-3">
             <div className="flex items-center space-x-2">
               <Monitor size={13} className="text-orange-500" />
               <span className="text-xs font-semibold text-zinc-300">Artifact</span>
-              <span className="text-[10px] bg-zinc-800 text-zinc-400 px-2 py-0.5 rounded-full font-mono border border-zinc-700">{artifact.lang}</span>
+              <span className="text-[10px] bg-zinc-700/60 text-zinc-300 px-2 py-0.5 rounded-full font-mono border border-zinc-600/60">{artifact.lang}</span>
             </div>
-            <div className="flex items-center bg-zinc-800 rounded-lg p-0.5">
+            <div className="flex items-center bg-zinc-700/50 rounded-lg p-0.5">
               {['preview', 'code'].map(t => (
                 <button
                   key={t}
                   onClick={() => setArtifactTabs(prev => ({ ...prev, [msgKey]: t }))}
                   className={`flex items-center space-x-1.5 px-3 py-1 rounded-md text-[11px] font-medium transition-all ${
-                    tab === t ? 'bg-zinc-600 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'
+                    tab === t ? 'bg-zinc-500/80 text-zinc-100' : 'text-zinc-400 hover:text-zinc-200'
                   }`}
                 >
                   {t === 'preview' ? <Eye size={11} /> : <Code size={11} />}
@@ -299,11 +365,11 @@ const App = () => {
           </div>
           <div className="flex items-center space-x-0.5">
             <button onClick={handleCopy} title="Copia codice"
-              className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-all">
+              className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-600/50 transition-all">
               {isCopied ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
             </button>
             <button onClick={handleOpenNew} title="Apri in nuova scheda"
-              className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-all">
+              className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-600/50 transition-all">
               <ExternalLink size={14} />
             </button>
           </div>
@@ -352,6 +418,8 @@ const App = () => {
     const textToSend = inputText;
     setInputText('');
     setIsLoading(true);
+    tokenStartRef.current = null;
+    setTokenStats({ count: 0, rate: null, elapsed: null, active: false });
     setProcessingSteps([{
       id: 'receiving',
       type: 'receiving',
@@ -370,7 +438,10 @@ const App = () => {
         body: JSON.stringify({
           model: selectedModel,
           message: textToSend,
-          session_id: currentSessionId
+          session_id: currentSessionId,
+          temperature: settings.gen_temperature,
+          top_p: settings.gen_top_p,
+          num_predict: settings.gen_num_predict === -1 ? null : settings.gen_num_predict,
         }),
         signal: controller.signal,
       });
@@ -430,7 +501,16 @@ const App = () => {
               });
               continue;
             } else {
-              if (data.content) assistantMsg.content += data.content;
+              if (data.content) {
+                assistantMsg.content += data.content;
+                const now = performance.now();
+                if (!tokenStartRef.current) tokenStartRef.current = now;
+                const elapsed = (now - tokenStartRef.current) / 1000;
+                setTokenStats(prev => {
+                  const count = prev.count + 1;
+                  return { count, rate: elapsed > 0.1 ? count / elapsed : null, elapsed, active: true };
+                });
+              }
               if (data.thinking) assistantMsg.thinking += data.thinking;
               if (data.session_id && !currentSessionId) {
                 setCurrentSessionId(data.session_id);
@@ -455,6 +535,7 @@ const App = () => {
       abortControllerRef.current = null;
       setIsLoading(false);
       setProcessingSteps(prev => prev.map(s => ({ ...s, status: 'done' })));
+      setTokenStats(prev => ({ ...prev, active: false }));
     }
   };
 
@@ -473,6 +554,58 @@ const App = () => {
     if (!dateStr) return '';
     const normalized = (dateStr.endsWith('Z') || dateStr.includes('+')) ? dateStr : `${dateStr}Z`;
     return new Date(normalized).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const saveSessionTitle = async (sessionId, newTitle) => {
+    const trimmed = newTitle.trim();
+    if (!trimmed) { setEditingSessionId(null); return; }
+    try {
+      await axios.patch(`${API_BASE}/sessions/${sessionId}`, { title: trimmed });
+      setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, title: trimmed } : s));
+      setEditingSessionId(null);
+      addToast('Conversazione rinominata.', 'success');
+    } catch { addToast('Errore durante la rinomina.', 'error'); }
+  };
+
+  const addToast = (message, type = 'success') => {
+    const id = Date.now();
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
+  };
+
+  const renderToasts = () => (
+    <div className="fixed top-4 right-4 z-[100] flex flex-col gap-2 pointer-events-none">
+      {toasts.map(t => {
+        const styles = {
+          success: { bar: 'bg-green-500',  icon: <CheckCircle2 size={16} className="text-green-400 shrink-0" /> },
+          error:   { bar: 'bg-red-500',    icon: <AlertCircle  size={16} className="text-red-400 shrink-0" /> },
+          info:    { bar: 'bg-blue-500',   icon: <Info         size={16} className="text-blue-400 shrink-0" /> },
+        }[t.type] || {};
+        return (
+          <div key={t.id} className="toast-enter pointer-events-auto flex items-start gap-3 bg-[#2a2a33] border border-zinc-700/60 rounded-xl shadow-xl shadow-black/40 px-4 py-3 min-w-[260px] max-w-[360px]">
+            {styles.icon}
+            <p className="text-sm text-zinc-200 leading-snug flex-1">{t.message}</p>
+            <button onClick={() => setToasts(p => p.filter(x => x.id !== t.id))} className="text-zinc-500 hover:text-zinc-300 transition-colors shrink-0">
+              <X size={14} />
+            </button>
+            <div className={`absolute bottom-0 left-0 h-0.5 rounded-b-xl ${styles.bar} opacity-60`} style={{ width: '100%', animation: 'toast-shrink 4s linear forwards' }} />
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  const highlightMatch = (text, query) => {
+    if (!query?.trim() || !text) return <span>{text}</span>;
+    const idx = text.toLowerCase().indexOf(query.toLowerCase());
+    if (idx === -1) return <span>{text}</span>;
+    return (
+      <span>
+        {text.slice(0, idx)}
+        <mark className="bg-orange-500/30 text-orange-300 rounded-sm px-0.5 not-italic">{text.slice(idx, idx + query.length)}</mark>
+        {text.slice(idx + query.length)}
+      </span>
+    );
   };
 
   const formatDateTime = (dateStr) => {
@@ -495,7 +628,7 @@ const App = () => {
       const a = document.createElement('a');
       a.href = url; a.download = filename; a.click();
       setTimeout(() => URL.revokeObjectURL(url), 5000);
-    } catch (err) { alert('Errore durante l\'esportazione.'); console.error(err); }
+    } catch (err) { addToast('Errore durante l\'esportazione.', 'error'); console.error(err); }
   };
 
   const handleImport = async (event) => {
@@ -578,11 +711,11 @@ const App = () => {
           {knowledgeBase.length > 0 && (
             <>
               <button onClick={handleExport}
-                className="bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-400 hover:text-zinc-200 px-4 py-2 rounded-xl font-bold flex items-center space-x-2 transition-all text-sm">
+                className="bg-zinc-700/60 hover:bg-zinc-600/70 border border-zinc-600/60 text-zinc-300 hover:text-zinc-100 px-4 py-2 rounded-xl font-bold flex items-center space-x-2 transition-all text-sm">
                 <Download size={16} /><span>Esporta</span>
               </button>
               <button onClick={handleResetKnowledge}
-                className="bg-zinc-800 hover:bg-red-900/50 border border-zinc-700 hover:border-red-700/50 text-zinc-400 hover:text-red-400 px-4 py-2 rounded-xl font-bold flex items-center space-x-2 transition-all text-sm">
+                className="bg-zinc-700/60 hover:bg-red-900/40 border border-zinc-600/60 hover:border-red-600/50 text-zinc-300 hover:text-red-400 px-4 py-2 rounded-xl font-bold flex items-center space-x-2 transition-all text-sm">
                 <Trash2 size={16} /><span>Svuota tutto</span>
               </button>
             </>
@@ -675,21 +808,21 @@ const App = () => {
         </div>
       )}
 
-      <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl overflow-hidden">
-        <div className="p-6 border-b border-zinc-800 bg-zinc-900/30">
-          <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Documenti Indicizzati</h4>
+      <div className="bg-zinc-800/40 border border-zinc-700/60 rounded-3xl overflow-hidden">
+        <div className="p-6 border-b border-zinc-700/40 bg-zinc-800/20">
+          <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-widest">Documenti Indicizzati</h4>
         </div>
         
-        <div className="divide-y divide-zinc-800 max-h-[500px] overflow-y-auto custom-scrollbar">
+        <div className="divide-y divide-zinc-700/40 max-h-[500px] overflow-y-auto custom-scrollbar">
           {knowledgeBase.length === 0 ? (
             <div className="p-12 text-center text-zinc-600 italic">
               Nessun documento presente nella Knowledge Base.
             </div>
           ) : (
             knowledgeBase.map((doc, idx) => (
-              <div key={idx} className="p-4 hover:bg-zinc-800/30 transition-colors flex items-center justify-between group">
+              <div key={idx} className="p-4 hover:bg-zinc-700/25 transition-colors flex items-center justify-between group">
                 <div className="flex items-center space-x-4 min-w-0">
-                  <div className="bg-zinc-800 p-2.5 rounded-lg text-orange-500/70">
+                  <div className="bg-zinc-700/60 p-2.5 rounded-lg text-orange-500/80">
                     <FileText size={20} />
                   </div>
                   <div className="min-w-0">
@@ -702,7 +835,7 @@ const App = () => {
                   </div>
                 </div>
                 <div className="flex items-center space-x-3 flex-shrink-0 ml-4">
-                  <span className="text-[10px] bg-zinc-800 text-zinc-500 px-2 py-1 rounded-md whitespace-nowrap">
+                  <span className="text-[10px] bg-zinc-700/50 text-zinc-400 px-2 py-1 rounded-md whitespace-nowrap">
                     {doc.chunks} {doc.chunks === 1 ? 'chunk' : 'chunks'}
                   </span>
                   <button
@@ -760,15 +893,15 @@ const App = () => {
 
             {/* Parametri */}
             {tool.parameters?.properties && Object.keys(tool.parameters.properties).length > 0 && (
-              <div className="border-t border-zinc-800 px-6 py-4">
-                <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest mb-3">Parametri</p>
+              <div className="border-t border-zinc-700/40 px-6 py-4">
+                <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-3">Parametri</p>
                 <div className="space-y-2">
                   {Object.entries(tool.parameters.properties).map(([param, schema]) => (
                     <div key={param} className="flex items-start space-x-3">
-                      <code className="text-xs font-mono text-zinc-300 bg-zinc-800 px-2 py-0.5 rounded shrink-0">
+                      <code className="text-xs font-mono text-zinc-200 bg-zinc-700/60 px-2 py-0.5 rounded shrink-0">
                         {param}
                       </code>
-                      <span className="text-[10px] text-zinc-600 bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded shrink-0">
+                      <span className="text-[10px] text-zinc-400 bg-zinc-700/50 border border-zinc-600/50 px-2 py-0.5 rounded shrink-0">
                         {schema.type || 'any'}
                       </span>
                       {tool.parameters.required?.includes(param) && (
@@ -800,7 +933,7 @@ const App = () => {
         <p className="text-zinc-500 text-sm">Personalizza il comportamento di Efesto e la tua identità.</p>
       </div>
 
-      <div className="space-y-6 bg-zinc-900/50 border border-zinc-800 p-8 rounded-3xl">
+      <div className="space-y-6 bg-zinc-800/40 border border-zinc-700/60 p-8 rounded-3xl">
         <div className="space-y-2">
           <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest flex items-center space-x-2">
             <User size={14} /> <span>Il tuo Nome</span>
@@ -809,7 +942,7 @@ const App = () => {
             type="text" 
             value={settings.user_name}
             onChange={(e) => setSettings({...settings, user_name: e.target.value})}
-            className="w-full bg-zinc-950 border border-zinc-800 rounded-xl py-3 px-4 outline-none focus:border-orange-500/50 transition-all"
+            className="w-full bg-zinc-800/60 border border-zinc-600/60 rounded-xl py-3 px-4 outline-none focus:border-orange-500/50 transition-all"
             placeholder="Come vuoi essere chiamato?"
           />
         </div>
@@ -822,7 +955,7 @@ const App = () => {
             value={settings.system_prompt}
             onChange={(e) => setSettings({...settings, system_prompt: e.target.value})}
             rows={4}
-            className="w-full bg-zinc-950 border border-zinc-800 rounded-xl py-3 px-4 outline-none focus:border-orange-500/50 transition-all resize-none"
+            className="w-full bg-zinc-800/60 border border-zinc-600/60 rounded-xl py-3 px-4 outline-none focus:border-orange-500/50 transition-all resize-none"
             placeholder="Istruzioni globali per l'AI..."
           />
         </div>
@@ -840,7 +973,7 @@ const App = () => {
               onChange={(e) => setSettings({...settings, context_length: parseInt(e.target.value)})}
               className="flex-1 accent-orange-600"
             />
-            <span className="bg-zinc-950 border border-zinc-800 w-12 text-center py-2 rounded-lg font-mono text-orange-500">
+            <span className="bg-zinc-800/60 border border-zinc-600/60 w-12 text-center py-2 rounded-lg font-mono text-orange-400">
               {settings.context_length}
             </span>
           </div>
@@ -865,7 +998,7 @@ const App = () => {
         <p className="text-zinc-500 text-sm">Parametri per l'indicizzazione e la ricerca nella Knowledge Base.</p>
       </div>
 
-      <div className="space-y-6 bg-zinc-900/50 border border-zinc-800 p-8 rounded-3xl">
+      <div className="space-y-6 bg-zinc-800/40 border border-zinc-700/60 p-8 rounded-3xl">
         <div className="space-y-2">
           <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest flex items-center space-x-2">
             <Cpu size={14} /> <span>Modello di Embedding</span>
@@ -873,7 +1006,7 @@ const App = () => {
           <select
             value={settings.rag_embedding_model}
             onChange={(e) => setSettings({ ...settings, rag_embedding_model: e.target.value })}
-            className="w-full bg-zinc-950 border border-zinc-800 rounded-xl py-3 px-4 outline-none focus:border-orange-500/50 transition-all"
+            className="w-full bg-zinc-800/60 border border-zinc-600/60 rounded-xl py-3 px-4 outline-none focus:border-orange-500/50 transition-all"
           >
             {models.map(m => (
               <option key={m} value={m}>{m}</option>
@@ -896,7 +1029,7 @@ const App = () => {
               onChange={(e) => setSettings({ ...settings, rag_chunk_size: parseInt(e.target.value) })}
               className="flex-1 accent-orange-600"
             />
-            <span className="bg-zinc-950 border border-zinc-800 w-16 text-center py-2 rounded-lg font-mono text-orange-500 text-sm">
+            <span className="bg-zinc-800/60 border border-zinc-600/60 w-16 text-center py-2 rounded-lg font-mono text-orange-400 text-sm">
               {settings.rag_chunk_size}
             </span>
           </div>
@@ -916,7 +1049,7 @@ const App = () => {
               onChange={(e) => setSettings({ ...settings, rag_batch_size: parseInt(e.target.value) })}
               className="flex-1 accent-orange-600"
             />
-            <span className="bg-zinc-950 border border-zinc-800 w-12 text-center py-2 rounded-lg font-mono text-orange-500">
+            <span className="bg-zinc-800/60 border border-zinc-600/60 w-12 text-center py-2 rounded-lg font-mono text-orange-400">
               {settings.rag_batch_size}
             </span>
           </div>
@@ -936,7 +1069,7 @@ const App = () => {
               onChange={(e) => setSettings({ ...settings, rag_search_limit: parseInt(e.target.value) })}
               className="flex-1 accent-orange-600"
             />
-            <span className="bg-zinc-950 border border-zinc-800 w-12 text-center py-2 rounded-lg font-mono text-orange-500">
+            <span className="bg-zinc-800/60 border border-zinc-600/60 w-12 text-center py-2 rounded-lg font-mono text-orange-400">
               {settings.rag_search_limit}
             </span>
           </div>
@@ -951,53 +1084,191 @@ const App = () => {
           <span>Salva Configurazioni</span>
         </button>
       </div>
+
+      {/* Parametri di generazione */}
+      <div>
+        <h3 className="text-xl font-bold mb-2 flex items-center space-x-2">
+          <SlidersHorizontal className="text-orange-500" />
+          <span>Parametri di Generazione</span>
+        </h3>
+        <p className="text-zinc-500 text-sm">Controlla il comportamento creativo del modello.</p>
+      </div>
+
+      <div className="space-y-6 bg-zinc-800/40 border border-zinc-700/60 p-8 rounded-3xl">
+        <div className="space-y-2">
+          <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest flex items-center space-x-2">
+            <Thermometer size={14} /> <span>Temperature</span>
+          </label>
+          <div className="flex items-center space-x-4">
+            <input type="range" min="0" max="2" step="0.05"
+              value={settings.gen_temperature}
+              onChange={e => setSettings({ ...settings, gen_temperature: parseFloat(e.target.value) })}
+              className="flex-1 accent-orange-600" />
+            <span className="bg-zinc-800/60 border border-zinc-600/60 w-14 text-center py-2 rounded-lg font-mono text-orange-400 text-sm">
+              {settings.gen_temperature.toFixed(2)}
+            </span>
+          </div>
+          <p className="text-[10px] text-zinc-600">Valori alti (es. 1.5) = risposte più creative e variabili. Valori bassi (es. 0.2) = risposte più precise e deterministiche.</p>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest flex items-center space-x-2">
+            <Layers size={14} /> <span>Top-P</span>
+          </label>
+          <div className="flex items-center space-x-4">
+            <input type="range" min="0" max="1" step="0.05"
+              value={settings.gen_top_p}
+              onChange={e => setSettings({ ...settings, gen_top_p: parseFloat(e.target.value) })}
+              className="flex-1 accent-orange-600" />
+            <span className="bg-zinc-800/60 border border-zinc-600/60 w-14 text-center py-2 rounded-lg font-mono text-orange-400 text-sm">
+              {settings.gen_top_p.toFixed(2)}
+            </span>
+          </div>
+          <p className="text-[10px] text-zinc-600">Nucleus sampling: considera solo i token che coprono il top-P% della probabilità cumulativa.</p>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest flex items-center space-x-2">
+            <History size={14} /> <span>Max Token Output</span>
+          </label>
+          <div className="flex items-center space-x-4">
+            <input type="range" min="-1" max="8192" step="128"
+              value={settings.gen_num_predict}
+              onChange={e => setSettings({ ...settings, gen_num_predict: parseInt(e.target.value) })}
+              className="flex-1 accent-orange-600" />
+            <span className="bg-zinc-800/60 border border-zinc-600/60 w-16 text-center py-2 rounded-lg font-mono text-orange-400 text-sm">
+              {settings.gen_num_predict === -1 ? '∞' : settings.gen_num_predict}
+            </span>
+          </div>
+          <p className="text-[10px] text-zinc-600">Numero massimo di token generati per risposta. -1 = illimitato (dipende dal contesto del modello).</p>
+        </div>
+
+        <button onClick={saveSettings}
+          className="w-full bg-orange-600 hover:bg-orange-500 py-4 rounded-2xl font-bold flex items-center justify-center space-x-2 transition-all shadow-lg shadow-orange-900/10">
+          <Save size={18} /><span>Salva Configurazioni</span>
+        </button>
+      </div>
     </div>
   );
 
   return (
-    <div className="flex h-full w-full bg-[#09090b] text-zinc-100 antialiased overflow-hidden">
+    <div className="flex h-full w-full bg-[#1c1c22] text-zinc-100 antialiased overflow-hidden">
+      {renderToasts()}
       
       {/* SIDEBAR SINISTRA */}
-      <aside className="w-64 bg-[#111113] border-r border-zinc-800 flex flex-col shrink-0">
+      <aside className="w-64 bg-[#222229] border-r border-zinc-700/50 flex flex-col shrink-0">
         <div className="p-6">
           <div className="flex items-center space-x-3 mb-8">
-            <div className="bg-orange-600 p-2 rounded-lg"><Layers size={20} /></div>
+            <div className="bg-gradient-to-br from-orange-500 to-orange-700 p-2 rounded-xl shadow-lg shadow-orange-900/50">
+              <Layers size={20} />
+            </div>
             <div>
-              <span className="text-xl font-bold leading-tight block">Efesto</span>
+              <span className="text-xl font-bold leading-tight block bg-gradient-to-r from-white to-zinc-400 bg-clip-text text-transparent">Efesto</span>
               <span className="text-[10px] text-zinc-500 leading-tight">Il fabbro degli Dei</span>
             </div>
           </div>
 
-          <button 
+          <button
             onClick={startNewChat}
-            className="w-full mb-6 flex items-center justify-center space-x-2 bg-zinc-800 hover:bg-zinc-700 py-3 rounded-xl border border-zinc-700 transition-all"
+            className="w-full mb-6 flex items-center justify-center space-x-2 bg-zinc-700/50 hover:bg-zinc-700/80 py-3 rounded-xl border border-zinc-600/60 hover:border-orange-500/30 transition-all group"
           >
-            <Plus size={18} />
-            <span className="text-sm font-semibold">Nuova Chat</span>
+            <Plus size={18} className="group-hover:text-orange-400 transition-colors" />
+            <span className="text-sm font-semibold group-hover:text-zinc-200 transition-colors">Nuova Chat</span>
           </button>
 
-          <nav className="space-y-1 overflow-y-auto max-h-[40vh] mb-6 custom-scrollbar">
-            <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest mb-2 px-4">Recenti</p>
-            {sessions.map(s => (
-              <button
-                key={s.id}
-                onClick={() => loadSession(s.id)}
-                className={`w-full flex items-start space-x-3 px-4 py-2.5 rounded-lg text-sm transition-all ${
-                  currentSessionId === s.id && activeTab === 'chat' ? 'bg-orange-600/10 text-orange-500' : 'text-zinc-500 hover:bg-zinc-900'
-                }`}
-              >
-                <MessageSquare size={16} className="mt-1 shrink-0" />
-                <div className="flex flex-col items-start min-w-0">
-                  <span className="truncate w-full font-medium">{s.title}</span>
-                  <span className="text-[10px] text-zinc-600">
-                    {formatDateTime(s.created_at)}
-                  </span>
+          <nav className="mb-6 flex flex-col min-h-0">
+            {/* Search input */}
+            <div className="relative mb-2">
+              <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
+              <input
+                type="text"
+                value={sessionSearch}
+                onChange={e => setSessionSearch(e.target.value)}
+                placeholder="Cerca conversazioni..."
+                className="w-full bg-zinc-700/40 border border-zinc-600/50 rounded-lg py-2 pl-8 pr-7 text-xs text-zinc-300 placeholder:text-zinc-600 outline-none focus:border-orange-500/40 focus:ring-1 focus:ring-orange-500/10 transition-all"
+              />
+              {sessionSearch && (
+                <button
+                  onClick={() => setSessionSearch('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors"
+                >
+                  <X size={13} />
+                </button>
+              )}
+            </div>
+
+            {/* Label */}
+            <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1.5 px-1 flex items-center gap-2">
+              {searchResults !== null
+                ? <>{searchResults.length} risultati</>
+                : 'Recenti'}
+              {isSearching && <Loader2 size={10} className="animate-spin text-zinc-500" />}
+            </p>
+
+            {/* List */}
+            <div className="space-y-0.5 overflow-y-auto max-h-[38vh] custom-scrollbar">
+              {(searchResults !== null ? searchResults : sessions).map(s => (
+                <div key={s.id} className={`group flex items-start rounded-lg border-l-2 -ml-px transition-all ${
+                  currentSessionId === s.id && activeTab === 'chat'
+                    ? 'bg-orange-600/15 border-orange-500'
+                    : 'border-transparent hover:bg-zinc-700/40'
+                }`}>
+                  {editingSessionId === s.id ? (
+                    <div className="flex items-center w-full px-3 py-2 gap-1.5">
+                      <MessageSquare size={14} className="shrink-0 text-orange-400" />
+                      <input
+                        autoFocus
+                        value={editingTitle}
+                        onChange={e => setEditingTitle(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') saveSessionTitle(s.id, editingTitle);
+                          if (e.key === 'Escape') setEditingSessionId(null);
+                        }}
+                        onBlur={() => saveSessionTitle(s.id, editingTitle)}
+                        className="flex-1 bg-zinc-700/60 border border-zinc-600/60 rounded-md px-2 py-0.5 text-xs text-zinc-200 outline-none focus:border-orange-500/50 min-w-0"
+                      />
+                    </div>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => loadSession(s.id)}
+                        className={`flex-1 flex items-start space-x-2.5 px-3 py-2.5 text-sm min-w-0 ${
+                          currentSessionId === s.id && activeTab === 'chat' ? 'text-orange-400' : 'text-zinc-400 group-hover:text-zinc-200'
+                        }`}
+                      >
+                        <MessageSquare size={14} className="mt-0.5 shrink-0" />
+                        <div className="flex flex-col items-start min-w-0 w-full">
+                          <span className="truncate w-full font-medium text-xs leading-snug">
+                            {highlightMatch(s.title || 'Senza titolo', sessionSearch)}
+                          </span>
+                          {s.snippet && (
+                            <span className="text-[10px] text-zinc-500 mt-0.5 leading-snug line-clamp-2 italic">
+                              {highlightMatch(s.snippet, sessionSearch)}
+                            </span>
+                          )}
+                          <span className="text-[10px] text-zinc-600 mt-0.5">{formatDateTime(s.created_at)}</span>
+                        </div>
+                      </button>
+                      <button
+                        onClick={e => { e.stopPropagation(); setEditingSessionId(s.id); setEditingTitle(s.title || ''); }}
+                        className="opacity-0 group-hover:opacity-100 p-2 mr-1 mt-1 text-zinc-600 hover:text-zinc-300 transition-all shrink-0"
+                        title="Rinomina"
+                      >
+                        <Pencil size={12} />
+                      </button>
+                    </>
+                  )}
                 </div>
-              </button>
-            ))}
+              ))}
+              {searchResults !== null && searchResults.length === 0 && !isSearching && (
+                <p className="text-[11px] text-zinc-600 italic text-center py-4 px-2">
+                  Nessuna conversazione trovata
+                </p>
+              )}
+            </div>
           </nav>
 
-          <div className="space-y-1 border-t border-zinc-800 pt-6">
+          <div className="space-y-1 border-t border-zinc-700/40 pt-6">
             {[
               { tab: 'db',       icon: <Database size={18} />, label: 'Database' },
               { tab: 'tools',    icon: <Hammer size={18} />,   label: 'Strumenti' },
@@ -1007,7 +1278,7 @@ const App = () => {
                 key={tab}
                 onClick={() => setActiveTab(tab)}
                 className={`w-full flex items-center space-x-3 px-4 py-2.5 rounded-lg transition-all ${
-                  activeTab === tab ? 'bg-zinc-900 text-orange-500' : 'text-zinc-500 hover:bg-zinc-900'
+                  activeTab === tab ? 'bg-orange-600/15 text-orange-400' : 'text-zinc-400 hover:bg-zinc-700/40 hover:text-zinc-200'
                 }`}
               >
                 {icon} <span className="text-sm">{label}</span>
@@ -1016,30 +1287,74 @@ const App = () => {
           </div>
         </div>
 
-        <div className="mt-auto p-6">
-          <div className="bg-zinc-900/50 p-4 rounded-2xl border border-zinc-800 flex items-center space-x-3">
-             <div className={`w-2 h-2 rounded-full ${isBackendLive ? 'bg-green-500 shadow-[0_0_8px_green]' : 'bg-red-500'}`} />
-             <span className="text-xs text-zinc-400">{isBackendLive ? 'Online' : 'Offline'}</span>
+        <div className="mt-auto p-4 pb-5">
+          <div className={`p-3 rounded-xl border flex items-center space-x-3 transition-all ${
+            isBackendLive ? 'bg-green-500/5 border-green-500/20' : 'bg-red-500/5 border-red-500/20'
+          }`}>
+            <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
+              isBackendLive ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.5)]' : 'bg-red-500'
+            }`} />
+            <span className={`text-xs font-medium ${isBackendLive ? 'text-green-400' : 'text-red-400'}`}>
+              {isBackendLive ? 'Backend Online' : 'Backend Offline'}
+            </span>
           </div>
         </div>
       </aside>
 
       {/* AREA CONTENUTO PRINCIPALE */}
       <main className="flex-1 flex flex-col min-w-0">
-        <header className="h-16 flex items-center justify-between px-8 border-b border-zinc-800 shrink-0">
-          <h2 className="font-semibold">
-            {activeTab === 'chat' ? (currentSessionId ? "Dettaglio Chat" : "Nuova Conversazione") :
+        <header className="h-14 flex items-center justify-between px-8 border-b border-zinc-700/40 bg-[#1e1e26]/80 backdrop-blur-sm shrink-0">
+          <h2 className="text-sm font-semibold text-zinc-300 tracking-wide">
+            {activeTab === 'chat' ? (currentSessionId ? "Conversazione" : "Nuova Conversazione") :
              activeTab === 'settings' ? "Impostazioni" :
              activeTab === 'tools' ? "Strumenti" : "Knowledge Base"}
           </h2>
           {activeTab === 'chat' && (
-            <select 
-              value={selectedModel}
-              onChange={(e) => setSelectedModel(e.target.value)}
-              className="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-xs outline-none focus:border-orange-500/50 transition-all"
-            >
-              {models.map(m => <option key={m} value={m}>{m}</option>)}
-            </select>
+            <div className="relative" ref={modelDropdownRef}>
+              <button
+                onClick={() => setIsModelDropdownOpen(o => !o)}
+                className={`flex items-center space-x-2 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all ${
+                  isModelDropdownOpen
+                    ? 'bg-zinc-700/80 border-orange-500/40 text-zinc-200'
+                    : 'bg-zinc-700/50 border-zinc-600/60 text-zinc-300 hover:border-zinc-500 hover:bg-zinc-700/70'
+                }`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 transition-colors ${
+                  runningModels.some(r => r === selectedModel || r.startsWith(selectedModel?.split(':')[0]))
+                    ? 'bg-green-400 shadow-[0_0_5px_rgba(74,222,128,0.6)]'
+                    : 'bg-zinc-500'
+                }`} />
+                <span className="max-w-[180px] truncate">{selectedModel || 'Seleziona modello'}</span>
+                <ChevronDown size={13} className={`text-zinc-400 transition-transform shrink-0 ${isModelDropdownOpen ? 'rotate-180' : ''}`} />
+              </button>
+
+              {isModelDropdownOpen && (
+                <div className="absolute right-0 top-full mt-1.5 w-64 bg-[#222229] border border-zinc-700/60 rounded-xl shadow-xl shadow-black/40 overflow-hidden z-50">
+                  <div className="px-3 pt-2.5 pb-1.5">
+                    <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Modelli disponibili</p>
+                  </div>
+                  <div className="max-h-64 overflow-y-auto custom-scrollbar pb-1.5">
+                    {models.map(m => {
+                      const isSelected = selectedModel === m;
+                      return (
+                        <button
+                          key={m}
+                          onClick={() => { setSelectedModel(m); setIsModelDropdownOpen(false); }}
+                          className={`w-full flex items-center gap-2.5 px-3 py-2 transition-colors ${
+                            isSelected
+                              ? 'text-orange-400 bg-orange-600/10'
+                              : 'text-zinc-300 hover:bg-zinc-700/50 hover:text-zinc-100'
+                          }`}
+                        >
+                          <span className="truncate font-mono text-xs flex-1 text-left">{m}</span>
+                          {isSelected && <Check size={13} className="text-orange-400 shrink-0" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </header>
 
@@ -1047,9 +1362,14 @@ const App = () => {
           {activeTab === 'chat' ? (
             <div className="p-8 space-y-6 max-w-5xl mx-auto">
               {messages.length === 0 && !isLoading && (
-                <div className="h-[60vh] flex flex-col items-center justify-center text-zinc-600 opacity-50">
-                   <Layers size={48} className="mb-4" />
-                   <p>Ciao {settings.user_name || 'Amico'}! Come posso aiutarti oggi?</p>
+                <div className="h-[60vh] flex flex-col items-center justify-center">
+                  <div className="bg-orange-600/10 border border-orange-600/20 p-6 rounded-3xl mb-5 shadow-lg shadow-orange-900/10">
+                    <Layers size={40} className="text-orange-500/70" />
+                  </div>
+                  <h3 className="text-xl font-semibold text-zinc-300 mb-1.5">
+                    Ciao, <span className="text-orange-400">{settings.user_name || 'Amico'}</span>!
+                  </h3>
+                  <p className="text-zinc-500 text-sm">Come posso aiutarti oggi?</p>
                 </div>
               )}
               {messages.filter(msg => msg.role !== 'tool').map((msg, i) => {
@@ -1062,7 +1382,7 @@ const App = () => {
                         const args = tc.function?.arguments || {};
                         const firstArg = Object.values(args)[0];
                         return (
-                          <span key={j} className="inline-flex items-center space-x-1.5 bg-zinc-900 border border-zinc-700 text-zinc-400 text-[11px] font-mono px-3 py-1 rounded-full">
+                          <span key={j} className="inline-flex items-center space-x-1.5 bg-zinc-700/50 border border-zinc-600/60 text-zinc-300 text-[11px] font-mono px-3 py-1 rounded-full">
                             <Hammer size={11} className="text-orange-500 shrink-0" />
                             <span className="text-orange-400">{name}</span>
                             {firstArg && (
@@ -1081,32 +1401,46 @@ const App = () => {
                 return (
                 <React.Fragment key={i}>
                   <div className={`flex items-start space-x-4 ${msg.role === 'user' ? 'flex-row-reverse space-x-reverse' : ''}`}>
-                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 shadow-lg ${msg.role === 'assistant' ? 'bg-orange-600 shadow-orange-900/20' : 'bg-zinc-700 shadow-black/20'}`}>
-                      {msg.role === 'assistant' ? <Layers size={16} /> : <span className="text-[10px] font-bold">IO</span>}
+                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                      msg.role === 'assistant'
+                        ? 'bg-gradient-to-br from-orange-500 to-orange-700 shadow-lg shadow-orange-900/40'
+                        : 'bg-zinc-600/80'
+                    }`}>
+                      {msg.role === 'assistant'
+                        ? <Layers size={15} />
+                        : <span className="text-[10px] font-bold text-zinc-200">{(settings.user_name?.[0] || 'IO').toUpperCase()}</span>
+                      }
                     </div>
                     <div className={`max-w-[80%] flex flex-col space-y-2`}>
                       {msg.role === 'assistant' && msg.thinking && (
-                        <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl overflow-hidden">
+                        <div className="bg-zinc-700/30 border border-zinc-600/40 rounded-xl overflow-hidden">
                           <button
                             onClick={() => toggleThinking(i)}
                             className="w-full flex items-center space-x-2 px-3 py-2 text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors uppercase tracking-wider font-bold"
                           >
-                            <Brain size={12} className="text-orange-500/50" />
+                            <Brain size={11} className="text-orange-500/40" />
                             <span>Ragionamento</span>
-                            {expandedThinking[i] ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                            <span className="ml-auto">
+                              {expandedThinking[i] ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                            </span>
                           </button>
                           {expandedThinking[i] && (
-                            <div className="px-3 pb-3 text-xs text-zinc-500 italic border-t border-zinc-800/50 pt-2 whitespace-pre-wrap leading-relaxed">
+                            <div className="px-3 pb-3 text-[11px] text-zinc-400 italic border-t border-zinc-600/30 pt-2 whitespace-pre-wrap leading-relaxed">
                               {msg.thinking}
                             </div>
                           )}
                         </div>
                       )}
-                      <div className={`p-4 rounded-2xl relative group shadow-sm ${msg.role === 'assistant' ? 'bg-zinc-900 border border-zinc-800' : 'bg-orange-600/10 border border-orange-600/20'}`}>
-                        <div className={`prose prose-sm prose-invert max-w-none`}>
+                      <div className={`p-4 rounded-2xl relative group ${
+                        msg.role === 'assistant'
+                          ? 'bg-zinc-800/60 border border-zinc-700/60 shadow-sm'
+                          : 'bg-gradient-to-br from-orange-600/20 to-orange-800/10 border border-orange-500/25 shadow-sm'
+                      }`}>
+                        <div className={`prose prose-sm prose-invert max-w-none ${isStreamingThis && !msg.content ? '' : ''}`}>
                           <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeHighlight, rehypeKatex]}>
-                            {msg.content || (isStreamingThis ? "..." : "")}
+                            {msg.content || (isStreamingThis ? "" : "")}
                           </ReactMarkdown>
+                          {isStreamingThis && <span className="streaming-cursor" />}
                         </div>
                         <span className="absolute bottom-2 right-3 text-[9px] text-zinc-600 opacity-0 group-hover:opacity-100 transition-opacity">
                           {formatTime(msg.created_at)}
@@ -1118,8 +1452,14 @@ const App = () => {
                 </React.Fragment>
               )})}
               {isLoading && !messages[messages.length-1]?.content && !messages[messages.length-1]?.thinking && (
-                <div className="flex items-center space-x-2 text-zinc-500 text-xs animate-pulse pl-12">
-                  <Loader2 className="animate-spin" size={14} /> <span>Efesto sta riflettendo...</span>
+                <div className="flex items-center space-x-3 pl-12">
+                  <div className="flex space-x-1">
+                    {[0, 1, 2].map(i => (
+                      <span key={i} className="w-1.5 h-1.5 rounded-full bg-orange-500/50"
+                        style={{ animation: `blink 1.2s ease-in-out ${i * 0.2}s infinite` }} />
+                    ))}
+                  </div>
+                  <span className="text-xs text-zinc-600">Efesto sta riflettendo...</span>
                 </div>
               )}
               <div ref={messagesEndRef} />
@@ -1144,12 +1484,12 @@ const App = () => {
                 onChange={(e) => setInputText(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && !isLoading && handleSendMessage()}
                 placeholder="Invia un messaggio a Efesto..."
-                className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl py-4 px-6 pr-14 outline-none focus:border-zinc-600 transition-all shadow-2xl shadow-black/50"
+                className="w-full bg-zinc-800/70 border border-zinc-700/60 rounded-2xl py-4 px-6 pr-14 outline-none focus:border-orange-500/50 focus:ring-2 focus:ring-orange-500/10 transition-all shadow-xl shadow-black/30 placeholder:text-zinc-500"
               />
               {isLoading ? (
                 <button
                   onClick={handleStopStreaming}
-                  className="absolute right-3 bg-zinc-700 hover:bg-red-800 p-2.5 rounded-xl transition-all shadow-lg group"
+                  className="absolute right-3 bg-zinc-600/80 hover:bg-red-700/80 p-2.5 rounded-xl transition-all shadow-lg group"
                   title="Interrompi generazione"
                 >
                   <Square size={18} className="text-zinc-300 group-hover:text-red-300 fill-current" />
@@ -1157,7 +1497,7 @@ const App = () => {
               ) : (
                 <button
                   onClick={handleSendMessage}
-                  className="absolute right-3 bg-orange-600 p-2.5 rounded-xl hover:bg-orange-500 transition-all shadow-lg shadow-orange-900/20"
+                  className="absolute right-3 bg-gradient-to-br from-orange-500 to-orange-700 p-2.5 rounded-xl hover:from-orange-400 hover:to-orange-600 transition-all shadow-lg shadow-orange-900/40"
                 >
                   <Send size={18} />
                 </button>
@@ -1169,14 +1509,41 @@ const App = () => {
 
       {/* SIDEBAR DESTRA — processo in tempo reale */}
       {activeTab === 'chat' && (
-        <aside className="w-48 bg-[#0d0d0f] border-l border-zinc-800/60 flex flex-col shrink-0">
-          <div className="p-4 border-b border-zinc-800/60 flex items-center space-x-2">
-            <Zap size={11} className="text-orange-500/70" />
-            <span className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Processo</span>
+        <aside className="w-48 bg-[#20202a] border-l border-zinc-700/40 flex flex-col shrink-0">
+          <div className="h-14 px-4 border-b border-zinc-700/40 flex items-center space-x-2">
+            <Zap size={12} className="text-orange-500" />
+            <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Processo</span>
           </div>
-          <div className="flex-1 overflow-y-auto p-3 custom-scrollbar">
+
+          {/* Token stats */}
+          {tokenStats.count > 0 && (
+            <div className={`mx-3 mt-3 px-3 py-2 rounded-xl border text-[11px] transition-all ${
+              tokenStats.active
+                ? 'bg-orange-500/5 border-orange-500/20'
+                : 'bg-zinc-800/40 border-zinc-700/40'
+            }`}>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-zinc-500 font-medium">Velocità</span>
+                <span className={`font-mono font-bold ${tokenStats.active ? 'text-orange-400' : 'text-zinc-400'}`}>
+                  {tokenStats.rate != null ? `${tokenStats.rate.toFixed(1)} tok/s` : '—'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-zinc-500 font-medium">Token</span>
+                <span className="font-mono text-zinc-400">{tokenStats.count}</span>
+              </div>
+              {!tokenStats.active && tokenStats.elapsed != null && (
+                <div className="flex items-center justify-between mt-1 pt-1 border-t border-zinc-700/40">
+                  <span className="text-zinc-600 font-medium">Durata</span>
+                  <span className="font-mono text-zinc-500">{tokenStats.elapsed.toFixed(1)}s</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="flex-1 overflow-y-auto p-3 custom-scrollbar min-h-0">
             {processingSteps.length === 0 ? (
-              <p className="text-[11px] text-zinc-700 italic text-center mt-8 leading-relaxed px-2">
+              <p className="text-[11px] text-zinc-500 italic text-center mt-8 leading-relaxed px-2">
                 In attesa di un messaggio...
               </p>
             ) : (
@@ -1192,10 +1559,10 @@ const App = () => {
                       <div className="flex flex-col items-center flex-shrink-0">
                         <div className={`w-5 h-5 rounded-full flex items-center justify-center mt-0.5 transition-all ${
                           isActive
-                            ? 'bg-orange-600/20 ring-1 ring-orange-500/40'
+                            ? 'bg-orange-500/20 ring-1 ring-orange-400/40'
                             : isDone
-                              ? 'bg-green-500/10'
-                              : 'bg-zinc-900'
+                              ? 'bg-green-500/15'
+                              : 'bg-zinc-700/50'
                         }`}>
                           {isActive ? (
                             <Loader2 size={11} className="animate-spin text-orange-400" />
@@ -1205,21 +1572,38 @@ const App = () => {
                             <Icon size={11} className="text-zinc-600" />
                           )}
                         </div>
-                        {!isLast && <div className="w-px bg-zinc-800/70 mt-0.5 mb-0.5" style={{ minHeight: '14px' }} />}
+                        {!isLast && <div className="w-px mt-0.5 mb-0.5" style={{ minHeight: '14px', background: 'linear-gradient(to bottom, #27272a, transparent)' }} />}
                       </div>
                       <div className="pb-2.5 min-w-0 flex-1">
                         <p className={`text-[11px] font-medium leading-tight ${
                           isActive ? 'text-orange-300' :
-                          isDone   ? 'text-green-400/70' :
-                                     'text-zinc-500'
+                          isDone   ? 'text-green-400/80' :
+                                     'text-zinc-400'
                         }`}>{step.label}</p>
                         {step.detail && (
-                          <p className="text-[10px] text-zinc-600 font-mono truncate mt-0.5">{step.detail}</p>
+                          <p className="text-[10px] text-zinc-500 font-mono truncate mt-0.5">{step.detail}</p>
                         )}
                       </div>
                     </div>
                   );
                 })}
+              </div>
+            )}
+          </div>
+
+          {/* Modelli in memoria */}
+          <div className="border-t border-zinc-700/40 p-3 shrink-0">
+            <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-2 px-1">In memoria</p>
+            {runningModels.length === 0 ? (
+              <p className="text-[11px] text-zinc-600 italic px-1">Nessun modello attivo</p>
+            ) : (
+              <div className="space-y-1.5">
+                {runningModels.map(m => (
+                  <div key={m} className="flex items-center gap-2 px-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-green-400 shadow-[0_0_5px_rgba(74,222,128,0.5)] flex-shrink-0" />
+                    <span className="text-[11px] font-mono text-green-300/80 truncate">{m}</span>
+                  </div>
+                ))}
               </div>
             )}
           </div>

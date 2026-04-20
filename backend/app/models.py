@@ -13,6 +13,9 @@ class SystemSettings(SQLModel, table=True):
     rag_chunk_size: int = Field(default=800)
     rag_batch_size: int = Field(default=8)
     rag_search_limit: int = Field(default=3)
+    gen_temperature: float = Field(default=0.8)
+    gen_top_p: float = Field(default=0.9)
+    gen_num_predict: int = Field(default=-1)
     last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class KnowledgeChunk(SQLModel, table=True):

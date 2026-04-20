@@ -26,6 +26,9 @@ def migrate_db():
         ("rag_batch_size",         "INTEGER NOT NULL DEFAULT 8"),
         ("rag_search_limit",       "INTEGER NOT NULL DEFAULT 3"),
         ("active_embedding_model", "TEXT NOT NULL DEFAULT ''"),
+        ("gen_temperature",         "REAL NOT NULL DEFAULT 0.8"),
+        ("gen_top_p",               "REAL NOT NULL DEFAULT 0.9"),
+        ("gen_num_predict",         "INTEGER NOT NULL DEFAULT -1"),
     ]
     with engine.connect() as conn:
         for col, definition in migrations:
@@ -97,7 +100,88 @@ def list_local_models():
     except:
         return {"models": []}
 
+@app.get("/ollama/ps")
+def list_running_models():
+    try:
+        response = ollama.ps()
+        if hasattr(response, 'models'):
+            return {"models": [m.model for m in response.models]}
+        elif isinstance(response, dict):
+            return {"models": [m.get('name', m.get('model', '')) for m in response.get('models', [])]}
+        return {"models": []}
+    except:
+        return {"models": []}
+
+@app.get("/ollama/ps/stream")
+async def stream_running_models():
+    async def generate():
+        last = None
+        while True:
+            try:
+                response = ollama.ps()
+                if hasattr(response, 'models'):
+                    models = [m.model for m in response.models]
+                elif isinstance(response, dict):
+                    models = [m.get('name', m.get('model', '')) for m in response.get('models', [])]
+                else:
+                    models = []
+            except:
+                models = []
+            if models != last:
+                last = models
+                yield f"data: {json.dumps({'models': models})}\n\n"
+            await asyncio.sleep(2)
+    return StreamingResponse(generate(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    })
+
 # --- Sessioni ---
+@app.get("/sessions/search")
+def search_sessions(q: str, session: Session = Depends(get_session)):
+    if not q.strip():
+        return []
+    from sqlalchemy import func, or_
+    pattern = f"%{q.lower()}%"
+    matching = session.exec(
+        select(ChatSession)
+        .where(or_(
+            func.lower(ChatSession.title).like(pattern),
+            ChatSession.id.in_(
+                select(ChatMessage.session_id).where(
+                    func.lower(ChatMessage.content).like(pattern),
+                    ChatMessage.role.in_(["user", "assistant"]),
+                )
+            )
+        ))
+        .order_by(ChatSession.created_at.desc())
+    ).all()
+
+    results = []
+    for s in matching:
+        match_in = "title" if q.lower() in (s.title or "").lower() else "message"
+        snippet = None
+        if match_in == "message":
+            msg = session.exec(
+                select(ChatMessage).where(
+                    ChatMessage.session_id == s.id,
+                    func.lower(ChatMessage.content).like(pattern),
+                    ChatMessage.role.in_(["user", "assistant"]),
+                ).order_by(ChatMessage.created_at).limit(1)
+            ).first()
+            if msg:
+                content = msg.content
+                idx = content.lower().find(q.lower())
+                start = max(0, idx - 35)
+                end = min(len(content), idx + len(q) + 60)
+                snippet = ("…" if start > 0 else "") + content[start:end] + ("…" if end < len(content) else "")
+        results.append({
+            "id": s.id, "title": s.title,
+            "created_at": s.created_at.isoformat(),
+            "match_in": match_in, "snippet": snippet,
+        })
+    return results
+
 @app.get("/sessions/", response_model=List[ChatSession])
 def read_sessions(session: Session = Depends(get_session)):
     return session.exec(select(ChatSession).order_by(ChatSession.created_at.desc())).all()
@@ -105,6 +189,16 @@ def read_sessions(session: Session = Depends(get_session)):
 @app.get("/sessions/{session_id}/messages", response_model=List[ChatMessage])
 def read_session_messages(session_id: int, session: Session = Depends(get_session)):
     return session.exec(select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at)).all()
+
+@app.patch("/sessions/{session_id}")
+def rename_session(session_id: int, data: dict, session: Session = Depends(get_session)):
+    s = session.get(ChatSession, session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Sessione non trovata")
+    s.title = data.get("title", s.title).strip() or s.title
+    session.commit()
+    session.refresh(s)
+    return s
 
 @app.post("/sessions/", response_model=ChatSession)
 def create_session(session_data: ChatSession, session: Session = Depends(get_session)):
@@ -132,6 +226,9 @@ def update_settings(new_settings: SystemSettings, session: Session = Depends(get
     db_settings.rag_chunk_size = new_settings.rag_chunk_size
     db_settings.rag_batch_size = new_settings.rag_batch_size
     db_settings.rag_search_limit = new_settings.rag_search_limit
+    db_settings.gen_temperature = new_settings.gen_temperature
+    db_settings.gen_top_p = new_settings.gen_top_p
+    db_settings.gen_num_predict = new_settings.gen_num_predict
     db_settings.last_updated = datetime.now(timezone.utc)
     session.add(db_settings)
     session.commit()
@@ -429,6 +526,9 @@ class ChatRequest(BaseModel):
     model: str
     message: str
     session_id: Optional[int] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    num_predict: Optional[int] = None
 
 @app.post("/chat")
 async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_session)):
@@ -475,11 +575,18 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
             first_thinking = True
             first_content = True
 
+            gen_options = {k: v for k, v in {
+                "temperature": request.temperature,
+                "top_p": request.top_p,
+                "num_predict": request.num_predict,
+            }.items() if v is not None}
+
             for chunk in ollama.chat(
                 model=request.model,
                 messages=ollama_messages,
                 tools=registry.get_ollama_format(),
                 stream=True,
+                **({"options": gen_options} if gen_options else {}),
             ):
                 msg = chunk.message
                 if msg.tool_calls:
@@ -572,6 +679,7 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
                     model=request.model,
                     messages=ollama_messages,
                     stream=True,
+                    **({"options": gen_options} if gen_options else {}),
                 ):
                     msg = chunk.message
                     content = msg.content or ''
