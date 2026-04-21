@@ -12,6 +12,7 @@ import uuid
 import numpy as np
 from datetime import datetime, timezone
 from .models import ModelConfig, ToolDefinition, ChatSession, ChatMessage, SystemSettings, KnowledgeChunk, Workflow
+from .mcp_manager import mcp_manager, load_config, save_config
 
 sqlite_file_name = "efesto.db"
 sqlite_url = f"sqlite:///{sqlite_file_name}"
@@ -81,12 +82,18 @@ def apply_rag_config(settings: SystemSettings):
     )
 
 @app.on_event("startup")
-def on_startup():
+async def on_startup():
     create_db_and_tables()
     with Session(engine) as session:
         settings = session.exec(select(SystemSettings)).first()
         if settings:
             apply_rag_config(settings)
+    await mcp_manager.start_all()
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    await mcp_manager.stop_all()
 
 # --- Modelli ---
 @app.get("/ollama/list")
@@ -583,11 +590,12 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
                 "num_predict": request.num_predict,
             }.items() if v is not None}
 
+            all_tools = registry.get_ollama_format() + mcp_manager.get_all_tools_ollama()
             for chunk in ollama.chat(
                 model=request.model,
                 messages=ollama_messages,
-                tools=registry.get_ollama_format(),
                 stream=True,
+                **({"tools": all_tools} if all_tools else {}),
                 **({"options": gen_options} if gen_options else {}),
             ):
                 msg = chunk.message
@@ -648,9 +656,17 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
                 for tc_db, tc_ollama in zip(tool_calls_for_db, tool_calls_for_ollama):
                     tool_name = tc_ollama['function']['name']
                     yield json.dumps({"step": "tool_executing", "tool": tool_name}) + "\n"
-                    tool = registry.get_tool(tool_name)
-                    if tool:
-                        tool_output = await tool.execute(**tc_ollama['function']['arguments'])
+                    tool_output = None
+                    if tool_name.startswith("mcp__"):
+                        try:
+                            tool_output = await mcp_manager.call_tool(tool_name, tc_ollama['function']['arguments'])
+                        except Exception as e:
+                            tool_output = f"[MCP Error] {e}"
+                    else:
+                        tool = registry.get_tool(tool_name)
+                        if tool:
+                            tool_output = await tool.execute(**tc_ollama['function']['arguments'])
+                    if tool_output is not None:
                         with Session(engine) as save_db:
                             save_db.add(ChatMessage(
                                 session_id=session_id,
@@ -936,3 +952,76 @@ async def run_workflow(wf_id: int, body: dict, session: Session = Depends(get_se
         yield json.dumps({"event": "workflow_done", "outputs": outputs}) + "\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# ── MCP ───────────────────────────────────────────────────────────────────────
+
+class McpServerPayload(BaseModel):
+    name: str
+    command: str
+    args: List[str] = []
+    env: Dict[str, str] = {}
+    enabled: bool = True
+
+
+@app.get("/mcp/servers")
+def list_mcp_servers():
+    return mcp_manager.list_servers()
+
+
+@app.post("/mcp/servers")
+async def add_mcp_server(payload: McpServerPayload):
+    config = load_config()
+    servers = config.setdefault("mcpServers", {})
+    if payload.name in servers:
+        raise HTTPException(400, f"Server '{payload.name}' già esistente")
+    srv_cfg = {
+        "command": payload.command,
+        "args": payload.args,
+        "env": payload.env,
+        "enabled": payload.enabled,
+    }
+    servers[payload.name] = srv_cfg
+    save_config(config)
+    if payload.enabled:
+        await mcp_manager.start_server(payload.name, srv_cfg)
+    return {"ok": True}
+
+
+@app.patch("/mcp/servers/{name}")
+async def update_mcp_server(name: str, payload: dict):
+    config = load_config()
+    servers = config.get("mcpServers", {})
+    if name not in servers:
+        raise HTTPException(404, f"Server '{name}' non trovato")
+    srv = servers[name]
+    for key in ("command", "args", "env", "enabled"):
+        if key in payload:
+            srv[key] = payload[key]
+    save_config(config)
+    if srv.get("enabled", True):
+        await mcp_manager.start_server(name, srv)
+    else:
+        await mcp_manager.stop_server(name)
+    return {"ok": True}
+
+
+@app.delete("/mcp/servers/{name}")
+async def delete_mcp_server(name: str):
+    config = load_config()
+    servers = config.get("mcpServers", {})
+    if name not in servers:
+        raise HTTPException(404, f"Server '{name}' non trovato")
+    del servers[name]
+    save_config(config)
+    await mcp_manager.stop_server(name)
+    return {"ok": True}
+
+
+@app.post("/mcp/servers/{name}/restart")
+async def restart_mcp_server(name: str):
+    try:
+        await mcp_manager.restart_server(name)
+        return {"ok": True}
+    except ValueError as e:
+        raise HTTPException(404, str(e))

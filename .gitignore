@@ -23,6 +23,9 @@ venv/
 .env.*
 !.env.example
 
+# ── MCP (config locale, non condividere) ───────────────
+backend/mcp_config.json
+
 # ── Database e dati generati ───────────────────────────
 backend/efesto.db
 backend/efesto.db-shm

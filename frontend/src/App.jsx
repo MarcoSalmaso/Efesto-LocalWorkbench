@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 const WorkflowEditor = lazy(() => import('./workflow/WorkflowEditor'));
 const WorkflowList   = lazy(() => import('./workflow/WorkflowList'));
+const McpPanel       = lazy(() => import('./mcp/McpPanel'));
 import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -49,6 +50,7 @@ import {
   Thermometer,
   SlidersHorizontal,
   GitBranch,
+  Plug,
 } from 'lucide-react';
 
 const API_BASE = "http://localhost:8006";
@@ -1225,8 +1227,8 @@ const App = () => {
       
       {/* SIDEBAR SINISTRA */}
       <aside className="w-64 bg-[#222229] border-r border-zinc-700/50 flex flex-col shrink-0">
-        <div className="p-6">
-          <div className="flex items-center space-x-3 mb-8">
+        <div className="p-6 overflow-y-auto flex-1 custom-scrollbar">
+          <div className="flex items-center space-x-3 mb-4">
             <div className="bg-gradient-to-br from-orange-500 to-orange-700 p-2 rounded-xl shadow-lg shadow-orange-900/50">
               <Layers size={20} />
             </div>
@@ -1234,6 +1236,13 @@ const App = () => {
               <span className="text-xl font-bold leading-tight block bg-gradient-to-r from-white to-zinc-400 bg-clip-text text-transparent">Efesto</span>
               <span className="text-[10px] text-zinc-500 leading-tight">Il fabbro degli Dei</span>
             </div>
+          </div>
+
+          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border mb-6 text-[11px] font-medium transition-all ${
+            isBackendLive ? 'bg-green-500/5 border-green-500/15 text-green-400' : 'bg-red-500/5 border-red-500/20 text-red-400'
+          }`}>
+            <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${isBackendLive ? 'bg-green-400 shadow-[0_0_5px_rgba(74,222,128,0.6)]' : 'bg-red-500'}`} />
+            {isBackendLive ? 'Backend Online' : 'Backend Offline'}
           </div>
 
           <button
@@ -1340,6 +1349,7 @@ const App = () => {
             {[
               { tab: 'db',       icon: <Database   size={18} />, label: 'Sistema RAG' },
               { tab: 'workflow', icon: <GitBranch  size={18} />, label: 'Workflow' },
+              { tab: 'mcp',      icon: <Plug       size={18} />, label: 'MCP' },
               { tab: 'tools',    icon: <Hammer     size={18} />, label: 'Strumenti' },
               { tab: 'settings', icon: <Settings   size={18} />, label: 'Impostazioni' },
             ].map(({ tab, icon, label }) => (
@@ -1356,18 +1366,6 @@ const App = () => {
           </div>
         </div>
 
-        <div className="mt-auto p-4 pb-5">
-          <div className={`p-3 rounded-xl border flex items-center space-x-3 transition-all ${
-            isBackendLive ? 'bg-green-500/5 border-green-500/20' : 'bg-red-500/5 border-red-500/20'
-          }`}>
-            <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
-              isBackendLive ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.5)]' : 'bg-red-500'
-            }`} />
-            <span className={`text-xs font-medium ${isBackendLive ? 'text-green-400' : 'text-red-400'}`}>
-              {isBackendLive ? 'Backend Online' : 'Backend Offline'}
-            </span>
-          </div>
-        </div>
       </aside>
 
       {/* AREA CONTENUTO PRINCIPALE */}
@@ -1383,6 +1381,7 @@ const App = () => {
             {activeTab === 'chat' ? (currentSessionId ? "Conversazione" : "Nuova Conversazione") :
              activeTab === 'settings' ? "Impostazioni" :
              activeTab === 'tools' ? "Strumenti" :
+             activeTab === 'mcp' ? "MCP Servers" :
              activeTab === 'workflow' ? (openWorkflow ? openWorkflow.name : "Workflow") :
              "Knowledge Base"}
           </h2>
@@ -1574,6 +1573,12 @@ const App = () => {
             <div className="p-12">{renderDatabase()}</div>
           ) : activeTab === 'tools' ? (
             <div className="p-12">{renderTools()}</div>
+          ) : activeTab === 'mcp' ? (
+            <div className="p-12">
+              <Suspense fallback={<div className="flex items-center justify-center py-12 text-zinc-600 text-sm">Caricamento...</div>}>
+                <McpPanel />
+              </Suspense>
+            </div>
           ) : activeTab === 'workflow' ? (
             <Suspense fallback={<div className="h-full flex items-center justify-center text-zinc-600 text-sm">Caricamento...</div>}>
               {openWorkflow ? (
@@ -1751,6 +1756,7 @@ const App = () => {
           </div>
         </aside>
       )}
+
     </div>
   );
 };

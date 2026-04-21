@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "efesto-tools": {
+      "command": "python3",
+      "args": ["/percorso/assoluto/backend/mcp_servers/efesto_tools.py"],
+      "env": {},
+      "enabled": true
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/percorso/da/esporre"],
+      "env": {},
+      "enabled": false
+    }
+  }
+}
