@@ -767,12 +767,35 @@ def _topo_sort(nodes: list, edges: list) -> list:
     return order
 
 def _resolve(text: str, outputs: dict, quote: bool = False) -> str:
-    """Sostituisce {{node_id.output}} con i valori reali."""
+    """Sostituisce {{node_id.field}} con i valori reali. Supporta .output e i campi del form."""
     import re
     def replace(m):
-        val = str(outputs.get(m.group(1), {}).get("output", ""))
+        node_id, field = m.group(1), m.group(2)
+        node_out = outputs.get(node_id, {})
+        if field == "output":
+            val = str(node_out.get("output", ""))
+        else:
+            val = str(node_out.get("fields", {}).get(field, ""))
         return json.dumps(val) if quote else val
-    return re.sub(r"\{\{(\w+)\.output\}\}", replace, text)
+    return re.sub(r"\{\{(\w+)\.([\w]+)\}\}", replace, text)
+
+def _should_skip(nid: str, edges: list, outputs: dict) -> bool:
+    """Ritorna True se il nodo è su un branch condition non attivato."""
+    incoming = [e for e in edges if e.get("target") == nid]
+    if not incoming:
+        return False
+    for edge in incoming:
+        src = edge.get("source")
+        src_out = outputs.get(src, {})
+        if src_out.get("skipped"):
+            continue
+        src_handle = edge.get("sourceHandle")
+        if src_handle in ("true", "false"):
+            cond_bool = src_out.get("condition_bool")
+            if cond_bool is not None and cond_bool != (src_handle == "true"):
+                continue
+        return False
+    return True
 
 @app.post("/workflows/{wf_id}/run")
 async def run_workflow(wf_id: int, body: dict, session: Session = Depends(get_session)):
@@ -783,6 +806,7 @@ async def run_workflow(wf_id: int, body: dict, session: Session = Depends(get_se
     nodes = definition.get("nodes", [])
     edges = definition.get("edges", [])
     user_input = body.get("input", "")
+    input_fields = body.get("input_fields", {})
     model = body.get("model", "")
     settings = session.exec(select(SystemSettings)).first()
 
@@ -797,22 +821,51 @@ async def run_workflow(wf_id: int, body: dict, session: Session = Depends(get_se
             ntype = node.get("type", "")
             data  = node.get("data", {})
 
+            # Le note non vengono eseguite
+            if ntype == "note":
+                continue
+
+            # Salta i nodi sui branch condition non attivati
+            if _should_skip(nid, edges, outputs):
+                outputs[nid] = {"output": "", "skipped": True}
+                yield json.dumps({"event": "node_skipped", "node_id": nid}) + "\n"
+                continue
+
             yield json.dumps({"event": "node_start", "node_id": nid}) + "\n"
 
             try:
                 if ntype == "input":
+                    node_input_fields = input_fields.get(nid)
+                    if node_input_fields and data.get("fields"):
+                        result = json.dumps(node_input_fields, ensure_ascii=False)
+                        outputs[nid] = {"output": result, "fields": node_input_fields}
+                        yield json.dumps({"event": "node_done", "node_id": nid, "output": result}) + "\n"
+                        continue
                     result = user_input
 
                 elif ntype == "ai_prompt":
                     prompt = _resolve(data.get("prompt", ""), outputs)
                     system = data.get("system", "") or (settings.system_prompt if settings else "")
+                    schema_str = data.get("schema", "").strip() if data.get("structured") else ""
+                    fmt = None
+                    if data.get("structured"):
+                        if schema_str:
+                            try:
+                                fmt = json.loads(schema_str)
+                            except Exception:
+                                fmt = "json"
+                        else:
+                            fmt = "json"
                     full = ""
-                    for chunk in ollama.chat(
+                    chat_kwargs = dict(
                         model=data.get("model") or model or "",
                         messages=[{"role": "system", "content": system},
                                   {"role": "user",   "content": prompt}],
                         stream=True,
-                    ):
+                    )
+                    if fmt is not None:
+                        chat_kwargs["format"] = fmt
+                    for chunk in ollama.chat(**chat_kwargs):
                         token = chunk.message.content or ""
                         full += token
                         if token:
@@ -822,7 +875,6 @@ async def run_workflow(wf_id: int, body: dict, session: Session = Depends(get_se
                 elif ntype == "python":
                     code_template = data.get("code", "")
                     code = _resolve(code_template, outputs, quote=True)
-                    # Inietta le variabili degli step precedenti come variabili Python
                     injections = "\n".join(
                         f'__{k} = {json.dumps(v.get("output",""))}' for k, v in outputs.items()
                     )
@@ -832,6 +884,42 @@ async def run_workflow(wf_id: int, body: dict, session: Session = Depends(get_se
 
                 elif ntype == "output":
                     result = _resolve(data.get("template", "{{" + (edges[-1]["source"] if edges else "") + ".output}}"), outputs)
+
+                elif ntype == "condition":
+                    import re as _re
+                    condition_expr = _resolve(data.get("condition", "False"), outputs)
+                    # Ricava l'output del predecessore diretto
+                    incoming = [e for e in edges if e.get("target") == nid]
+                    prev_output = ""
+                    if incoming:
+                        prev_output = str(outputs.get(incoming[0].get("source"), {}).get("output", ""))
+                    safe_globals = {"__builtins__": {}}
+                    safe_locals = {
+                        "output": prev_output,
+                        "len": len, "str": str, "int": int, "float": float,
+                        "bool": bool, "any": any, "all": all, "abs": abs,
+                        "re": _re,
+                    }
+                    condition_bool = bool(eval(condition_expr, safe_globals, safe_locals))
+                    result = "true" if condition_bool else "false"
+                    outputs[nid] = {"output": result, "condition_bool": condition_bool}
+                    yield json.dumps({"event": "node_done", "node_id": nid, "output": result}) + "\n"
+                    continue
+
+                elif ntype == "rag_search":
+                    from .rag import rag_manager
+                    query = _resolve(data.get("query", ""), outputs)
+                    limit = int(data.get("limit") or 3)
+                    results = rag_manager.search(query, limit=limit)
+                    if results:
+                        parts = []
+                        for r in results:
+                            meta = r.get("metadata", {})
+                            fname = meta.get("filename", "documento") if isinstance(meta, dict) else "documento"
+                            parts.append(f"[{fname}]\n{r.get('text', '')}")
+                        result = "\n\n---\n\n".join(parts)
+                    else:
+                        result = "Nessun risultato trovato nella knowledge base."
 
                 else:
                     result = ""

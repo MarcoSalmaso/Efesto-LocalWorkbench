@@ -6,17 +6,20 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import axios from 'axios';
-import { Play, Square, Plus, Trash2, LogIn, Brain, Code, LogOut, Save, Loader2, Pencil, Check, X, Copy, CheckCheck } from 'lucide-react';
-import { InputNode, AiPromptNode, PythonNode, OutputNode } from './nodes';
+import { Play, Square, Plus, Trash2, LogIn, Brain, Code, LogOut, Save, Loader2, Pencil, Check, X, Copy, CheckCheck, GitBranch, Database, StickyNote } from 'lucide-react';
+import { InputNode, AiPromptNode, PythonNode, OutputNode, ConditionNode, RagSearchNode, NoteNode } from './nodes';
 import ConfigPanel from './ConfigPanel';
 
 const API = 'http://localhost:8006';
 
 const NODE_TYPES = {
-  input:     InputNode,
-  ai_prompt: AiPromptNode,
-  python:    PythonNode,
-  output:    OutputNode,
+  input:      InputNode,
+  ai_prompt:  AiPromptNode,
+  python:     PythonNode,
+  output:     OutputNode,
+  condition:  ConditionNode,
+  rag_search: RagSearchNode,
+  note:       NoteNode,
 };
 
 const EDGE_STYLE = {
@@ -25,8 +28,30 @@ const EDGE_STYLE = {
   animated: false,
 };
 
+const EDGE_STYLE_TRUE = {
+  style: { stroke: '#22c55e', strokeWidth: 1.5, opacity: 0.7 },
+  markerEnd: { type: MarkerType.ArrowClosed, color: '#22c55e' },
+  animated: false,
+};
+
+const EDGE_STYLE_FALSE = {
+  style: { stroke: '#ef4444', strokeWidth: 1.5, opacity: 0.7 },
+  markerEnd: { type: MarkerType.ArrowClosed, color: '#ef4444' },
+  animated: false,
+};
+
 let nodeIdCounter = 1;
 const newId = () => `n${nodeIdCounter++}`;
+
+const NODE_TOOLBAR = [
+  { type: 'input',      icon: <LogIn      size={13} />, label: 'Input' },
+  { type: 'ai_prompt',  icon: <Brain      size={13} />, label: 'AI' },
+  { type: 'python',     icon: <Code       size={13} />, label: 'Python' },
+  { type: 'output',     icon: <LogOut     size={13} />, label: 'Output' },
+  { type: 'condition',  icon: <GitBranch  size={13} />, label: 'Condition' },
+  { type: 'rag_search', icon: <Database   size={13} />, label: 'RAG' },
+  { type: 'note',       icon: <StickyNote size={13} />, label: 'Nota' },
+];
 
 export default function WorkflowEditor({ workflow, models, selectedModel, onSaved, onRenamed, addToast }) {
   const definition = (() => {
@@ -55,6 +80,7 @@ export default function WorkflowEditor({ workflow, models, selectedModel, onSave
   const [selectedNode, setSelectedNode] = useState(null);
   const [running, setRunning] = useState(false);
   const [runInput, setRunInput] = useState('');
+  const [runFormValues, setRunFormValues] = useState({});
   const [showRunInput, setShowRunInput] = useState(false);
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState(null);
@@ -69,7 +95,12 @@ export default function WorkflowEditor({ workflow, models, selectedModel, onSave
   const abortRef = useRef(null);
 
   const onConnect = useCallback(
-    (params) => setEdges(eds => addEdge({ ...params, ...EDGE_STYLE }, eds)),
+    (params) => {
+      let style = EDGE_STYLE;
+      if (params.sourceHandle === 'true')  style = EDGE_STYLE_TRUE;
+      if (params.sourceHandle === 'false') style = EDGE_STYLE_FALSE;
+      setEdges(eds => addEdge({ ...params, ...style }, eds));
+    },
     [setEdges]
   );
 
@@ -78,15 +109,18 @@ export default function WorkflowEditor({ workflow, models, selectedModel, onSave
 
   const addNode = (type) => {
     const positions = {
-      input:     { x: 100, y: 80 },
-      ai_prompt: { x: 100, y: 220 },
-      python:    { x: 400, y: 220 },
-      output:    { x: 250, y: 400 },
+      input:      { x: 100, y: 80 },
+      ai_prompt:  { x: 100, y: 220 },
+      python:     { x: 400, y: 220 },
+      output:     { x: 250, y: 400 },
+      condition:  { x: 300, y: 220 },
+      rag_search: { x: 400, y: 80 },
+      note:       { x: 600, y: 80 },
     };
     const id = newId();
     setNodes(ns => [...ns, {
       id, type,
-      position: positions[type],
+      position: positions[type] || { x: 200, y: 200 },
       data: { label: '', status: 'idle' },
     }]);
   };
@@ -125,8 +159,20 @@ export default function WorkflowEditor({ workflow, models, selectedModel, onSave
     finally { setSaving(false); }
   };
 
+  // Nodes with form fields
+  const formInputNodes = nodes.filter(n => n.type === 'input' && n.data.fields?.length > 0);
+  const hasForm = formInputNodes.length > 0;
+
   const run = async () => {
-    if (!runInput.trim()) { addToast('Inserisci un input per avviare il workflow.', 'info'); return; }
+    if (hasForm) {
+      const allFilled = formInputNodes.every(n =>
+        (n.data.fields || []).every(f => runFormValues[n.id]?.[f.key]?.trim())
+      );
+      if (!allFilled) { addToast('Compila tutti i campi del form.', 'info'); return; }
+    } else {
+      if (!runInput.trim()) { addToast('Inserisci un input per avviare il workflow.', 'info'); return; }
+    }
+
     setShowRunInput(false);
     setRunning(true);
     setResult(null);
@@ -134,11 +180,15 @@ export default function WorkflowEditor({ workflow, models, selectedModel, onSave
     resetStatuses();
     abortRef.current = new AbortController();
 
+    const body = hasForm
+      ? { input: '', input_fields: runFormValues, model: selectedModel }
+      : { input: runInput, model: selectedModel };
+
     try {
       const resp = await fetch(`${API}/workflows/${workflow.id}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input: runInput, model: selectedModel }),
+        body: JSON.stringify(body),
         signal: abortRef.current.signal,
       });
 
@@ -164,6 +214,8 @@ export default function WorkflowEditor({ workflow, models, selectedModel, onSave
               setNodeStatus(ev.node_id, 'done', { result: ev.output, streamBuffer: undefined });
               const nodeType = nodes.find(n => n.id === ev.node_id)?.type;
               if (nodeType === 'output') lastOutputRef.current = ev.output;
+            } else if (ev.event === 'node_skipped') {
+              setNodeStatus(ev.node_id, 'skipped');
             } else if (ev.event === 'node_error') {
               setNodeStatus(ev.node_id, 'error');
               addToast(`Errore nel nodo: ${ev.error}`, 'error');
@@ -205,13 +257,8 @@ export default function WorkflowEditor({ workflow, models, selectedModel, onSave
           </button>
         )}
 
-        <div className="flex items-center gap-1 bg-zinc-800/60 border border-zinc-700/50 rounded-xl p-1">
-          {[
-            { type: 'input',     icon: <LogIn  size={13} />, label: 'Input' },
-            { type: 'ai_prompt', icon: <Brain  size={13} />, label: 'AI' },
-            { type: 'python',    icon: <Code   size={13} />, label: 'Python' },
-            { type: 'output',    icon: <LogOut size={13} />, label: 'Output' },
-          ].map(({ type, icon, label }) => (
+        <div className="flex items-center gap-1 bg-zinc-800/60 border border-zinc-700/50 rounded-xl p-1 flex-wrap">
+          {NODE_TOOLBAR.map(({ type, icon, label }) => (
             <button key={type} onClick={() => addNode(type)}
               className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium text-zinc-400 hover:bg-zinc-700/60 hover:text-zinc-200 transition-all">
               <Plus size={10} className="text-orange-400" />{icon}{label}
@@ -276,16 +323,53 @@ export default function WorkflowEditor({ workflow, models, selectedModel, onSave
       {/* Run input modal */}
       {showRunInput && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="bg-[#222229] border border-zinc-700/60 rounded-2xl p-6 w-[420px] shadow-2xl space-y-4">
-            <h3 className="text-sm font-bold text-zinc-200">Input del workflow</h3>
-            <textarea
-              autoFocus
-              value={runInput}
-              onChange={e => setRunInput(e.target.value)}
-              placeholder="Es: Organizza una vacanza a Lisbona per 5 giorni..."
-              rows={4}
-              className="w-full bg-zinc-800/60 border border-zinc-600/60 rounded-xl px-3 py-2.5 text-sm text-zinc-200 outline-none focus:border-orange-500/50 resize-none"
-            />
+          <div className="bg-[#222229] border border-zinc-700/60 rounded-2xl p-6 w-[440px] shadow-2xl space-y-4">
+            <h3 className="text-sm font-bold text-zinc-200">
+              {hasForm ? 'Compila i campi del workflow' : 'Input del workflow'}
+            </h3>
+
+            {hasForm ? (
+              <div className="space-y-4">
+                {formInputNodes.map(inputNode => (
+                  <div key={inputNode.id} className="space-y-3">
+                    {formInputNodes.length > 1 && (
+                      <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest border-b border-zinc-700/40 pb-1">
+                        {inputNode.data.label || `Nodo ${inputNode.id}`}
+                      </p>
+                    )}
+                    {(inputNode.data.fields || []).map(f => (
+                      <div key={f.key} className="space-y-1">
+                        <label className="text-[11px] font-medium text-zinc-400">
+                          {f.label || f.key}
+                          <span className="ml-1.5 text-zinc-600 font-mono text-[10px]">{f.key}</span>
+                        </label>
+                        <input
+                          autoFocus={inputNode === formInputNodes[0] && f === inputNode.data.fields[0]}
+                          value={runFormValues[inputNode.id]?.[f.key] || ''}
+                          onChange={e => setRunFormValues(prev => ({
+                            ...prev,
+                            [inputNode.id]: { ...(prev[inputNode.id] || {}), [f.key]: e.target.value },
+                          }))}
+                          onKeyDown={e => { if (e.key === 'Enter') run(); }}
+                          className="w-full bg-zinc-800/60 border border-zinc-600/60 rounded-xl px-3 py-2 text-sm text-zinc-200 outline-none focus:border-orange-500/50"
+                          placeholder={`Inserisci ${f.label || f.key}...`}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <textarea
+                autoFocus
+                value={runInput}
+                onChange={e => setRunInput(e.target.value)}
+                placeholder="Es: Organizza una vacanza a Lisbona per 5 giorni..."
+                rows={4}
+                className="w-full bg-zinc-800/60 border border-zinc-600/60 rounded-xl px-3 py-2.5 text-sm text-zinc-200 outline-none focus:border-orange-500/50 resize-none"
+              />
+            )}
+
             <div className="flex gap-2 justify-end">
               <button onClick={() => setShowRunInput(false)}
                 className="px-4 py-2 rounded-xl bg-zinc-700/50 border border-zinc-600/50 text-zinc-300 text-xs font-medium hover:bg-zinc-700/80 transition-all">
