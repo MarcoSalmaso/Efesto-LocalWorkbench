@@ -120,6 +120,9 @@ cd backend && source venv/bin/activate && uvicorn app.main:app --reload --port 8
 
 # Terminale 2 — frontend
 cd frontend && npm run dev
+
+# Kill dei processi nella porta 8006
+lsof -ti :8006 | xargs kill -9
 ```
 
 ---

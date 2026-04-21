@@ -766,11 +766,12 @@ def _topo_sort(nodes: list, edges: list) -> list:
                 queue.append(child)
     return order
 
-def _resolve(text: str, outputs: dict) -> str:
+def _resolve(text: str, outputs: dict, quote: bool = False) -> str:
     """Sostituisce {{node_id.output}} con i valori reali."""
     import re
     def replace(m):
-        return str(outputs.get(m.group(1), {}).get("output", ""))
+        val = str(outputs.get(m.group(1), {}).get("output", ""))
+        return json.dumps(val) if quote else val
     return re.sub(r"\{\{(\w+)\.output\}\}", replace, text)
 
 @app.post("/workflows/{wf_id}/run")
@@ -807,7 +808,7 @@ async def run_workflow(wf_id: int, body: dict, session: Session = Depends(get_se
                     system = data.get("system", "") or (settings.system_prompt if settings else "")
                     full = ""
                     for chunk in ollama.chat(
-                        model=model or (data.get("model") or (settings and settings.rag_embedding_model) or ""),
+                        model=data.get("model") or model or "",
                         messages=[{"role": "system", "content": system},
                                   {"role": "user",   "content": prompt}],
                         stream=True,
@@ -820,7 +821,7 @@ async def run_workflow(wf_id: int, body: dict, session: Session = Depends(get_se
 
                 elif ntype == "python":
                     code_template = data.get("code", "")
-                    code = _resolve(code_template, outputs)
+                    code = _resolve(code_template, outputs, quote=True)
                     # Inietta le variabili degli step precedenti come variabili Python
                     injections = "\n".join(
                         f'__{k} = {json.dumps(v.get("output",""))}' for k, v in outputs.items()
