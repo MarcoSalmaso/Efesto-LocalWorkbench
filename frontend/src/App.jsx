@@ -1338,7 +1338,7 @@ const App = () => {
 
           <div className="space-y-1 border-t border-zinc-700/40 pt-6">
             {[
-              { tab: 'db',       icon: <Database   size={18} />, label: 'Database' },
+              { tab: 'db',       icon: <Database   size={18} />, label: 'Sistema RAG' },
               { tab: 'workflow', icon: <GitBranch  size={18} />, label: 'Workflow' },
               { tab: 'tools',    icon: <Hammer     size={18} />, label: 'Strumenti' },
               { tab: 'settings', icon: <Settings   size={18} />, label: 'Impostazioni' },
