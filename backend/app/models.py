@@ -60,6 +60,9 @@ class ChatMessage(SQLModel, table=True):
     tool_calls: Optional[List[Dict[str, Any]]] = Field(default=None, sa_column=Column(JSON))
     # Per i messaggi di tipo 'tool' che contengono il risultato
     tool_call_id: Optional[str] = None
+    # Snapshot dell'agente al momento dell'invio (null = Efesto globale)
+    agent_name: Optional[str] = Field(default=None)
+    agent_color: Optional[str] = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     session: ChatSession = Relationship(back_populates="messages")
 
@@ -67,6 +70,19 @@ class Workflow(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str = Field(default="Nuovo Workflow")
     definition: str = Field(default="{}", sa_column=Column(Text))  # JSON: {nodes, edges}
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class Agent(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    description: str = Field(default="", sa_column=Column(Text))
+    model: Optional[str] = Field(default=None)          # None = usa modello globale
+    system_prompt: str = Field(default="", sa_column=Column(Text))
+    tools_enabled: str = Field(default="*", sa_column=Column(Text))  # "*" = tutti, oppure JSON list
+    temperature: Optional[float] = Field(default=None)  # None = usa globale
+    top_p: Optional[float] = Field(default=None)
+    color: str = Field(default="orange")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

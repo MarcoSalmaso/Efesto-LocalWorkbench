@@ -11,7 +11,7 @@ import asyncio
 import uuid
 import numpy as np
 from datetime import datetime, timezone
-from .models import ModelConfig, ToolDefinition, ChatSession, ChatMessage, SystemSettings, KnowledgeChunk, Workflow
+from .models import ModelConfig, ToolDefinition, ChatSession, ChatMessage, SystemSettings, KnowledgeChunk, Workflow, Agent
 from .mcp_manager import mcp_manager, load_config, save_config
 
 sqlite_file_name = "efesto.db"
@@ -48,6 +48,17 @@ def migrate_db():
             conn.commit()
         except Exception:
             pass
+        try:
+            conn.execute(text("ALTER TABLE agent ADD COLUMN color TEXT NOT NULL DEFAULT 'orange'"))
+            conn.commit()
+        except Exception:
+            pass
+        for col in ["agent_name TEXT", "agent_color TEXT"]:
+            try:
+                conn.execute(text(f"ALTER TABLE chatmessage ADD COLUMN {col}"))
+                conn.commit()
+            except Exception:
+                pass
 
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
@@ -535,6 +546,7 @@ class ChatRequest(BaseModel):
     model: str
     message: str
     session_id: Optional[int] = None
+    agent_id: Optional[int] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     num_predict: Optional[int] = None
@@ -566,11 +578,21 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
 
     async def generate():
         try:
-            ollama_messages = [{'role': 'system', 'content': settings.system_prompt}]
+            # Risolvi agente (se presente)
+            agent = None
+            if request.agent_id:
+                with Session(engine) as adb:
+                    agent = adb.get(Agent, request.agent_id)
+
+            system_prompt = (agent.system_prompt if agent and agent.system_prompt else settings.system_prompt)
+            active_model  = agent.model if agent and agent.model else request.model
+            msg_agent_name  = agent.name  if agent else None
+            msg_agent_color = agent.color if agent else None
+
+            ollama_messages = [{'role': 'system', 'content': system_prompt}]
             for m in history:
                 msg_dict = {'role': m.role, 'content': m.content}
                 if m.tool_calls:
-                    # Ricostruisce nel formato nativo Ollama (solo function)
                     msg_dict['tool_calls'] = [
                         {'function': tc['function']}
                         for tc in m.tool_calls
@@ -584,15 +606,30 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
             first_thinking = True
             first_content = True
 
+            # Parametri generazione: request > agent > globale
+            temperature = request.temperature or (agent.temperature if agent else None) or settings.gen_temperature
+            top_p       = request.top_p       or (agent.top_p       if agent else None) or settings.gen_top_p
+            num_predict = request.num_predict or settings.gen_num_predict
             gen_options = {k: v for k, v in {
-                "temperature": request.temperature,
-                "top_p": request.top_p,
-                "num_predict": request.num_predict,
+                "temperature": temperature,
+                "top_p": top_p,
+                "num_predict": num_predict,
             }.items() if v is not None}
 
-            all_tools = registry.get_ollama_format() + mcp_manager.get_all_tools_ollama()
+            # Filtra tool in base all'agente
+            all_native = registry.get_ollama_format()
+            all_mcp    = mcp_manager.get_all_tools_ollama()
+            if agent and agent.tools_enabled != "*":
+                try:
+                    enabled = json.loads(agent.tools_enabled)
+                    all_native = [t for t in all_native if t['function']['name'] in enabled]
+                    all_mcp    = [t for t in all_mcp    if t['function']['name'] in enabled]
+                except Exception:
+                    pass
+            all_tools = all_native + all_mcp
+
             for chunk in ollama.chat(
-                model=request.model,
+                model=active_model,
                 messages=ollama_messages,
                 stream=True,
                 **({"tools": all_tools} if all_tools else {}),
@@ -644,6 +681,8 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
                         content=full_content,
                         thinking=full_thinking or None,
                         tool_calls=tool_calls_for_db,
+                        agent_name=msg_agent_name,
+                        agent_color=msg_agent_color,
                     ))
                     save_db.commit()
 
@@ -694,7 +733,7 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
                 yield json.dumps({"step": "generating"}) + "\n"
 
                 for chunk in ollama.chat(
-                    model=request.model,
+                    model=active_model,
                     messages=ollama_messages,
                     stream=True,
                     **({"options": gen_options} if gen_options else {}),
@@ -716,6 +755,8 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
                     role="assistant",
                     content=full_content,
                     thinking=full_thinking or None,
+                    agent_name=msg_agent_name,
+                    agent_color=msg_agent_color,
                 ))
                 save_db.commit()
 
@@ -1025,3 +1066,63 @@ async def restart_mcp_server(name: str):
         return {"ok": True}
     except ValueError as e:
         raise HTTPException(404, str(e))
+
+
+# ── Agents ────────────────────────────────────────────────────────────────────
+
+class AgentPayload(BaseModel):
+    name: str
+    description: str = ""
+    model: Optional[str] = None
+    system_prompt: str = ""
+    tools_enabled: str = "*"
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    color: str = "orange"
+
+
+@app.get("/agents/")
+def list_agents(session: Session = Depends(get_session)):
+    return session.exec(select(Agent).order_by(Agent.created_at)).all()
+
+
+@app.post("/agents/")
+def create_agent(payload: AgentPayload, session: Session = Depends(get_session)):
+    agent = Agent(**payload.dict())
+    session.add(agent)
+    session.commit()
+    session.refresh(agent)
+    return agent
+
+
+@app.get("/agents/{agent_id}")
+def get_agent(agent_id: int, session: Session = Depends(get_session)):
+    agent = session.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(404, "Agente non trovato")
+    return agent
+
+
+@app.patch("/agents/{agent_id}")
+def update_agent(agent_id: int, payload: dict, session: Session = Depends(get_session)):
+    agent = session.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(404, "Agente non trovato")
+    for key, val in payload.items():
+        if hasattr(agent, key):
+            setattr(agent, key, val)
+    agent.updated_at = datetime.now(timezone.utc)
+    session.add(agent)
+    session.commit()
+    session.refresh(agent)
+    return agent
+
+
+@app.delete("/agents/{agent_id}")
+def delete_agent(agent_id: int, session: Session = Depends(get_session)):
+    agent = session.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(404, "Agente non trovato")
+    session.delete(agent)
+    session.commit()
+    return {"ok": True}

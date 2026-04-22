@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
+import { avatarGradientStyle, bubbleStyle, getAgentColor } from './agents/agentColors';
+import axios from 'axios';
 const WorkflowEditor = lazy(() => import('./workflow/WorkflowEditor'));
 const WorkflowList   = lazy(() => import('./workflow/WorkflowList'));
 const McpPanel       = lazy(() => import('./mcp/McpPanel'));
-import axios from 'axios';
+const AgentsPanel    = lazy(() => import('./agents/AgentsPanel'));
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -51,6 +53,7 @@ import {
   SlidersHorizontal,
   GitBranch,
   Plug,
+  Bot,
 } from 'lucide-react';
 
 const API_BASE = "http://localhost:8006";
@@ -83,6 +86,11 @@ const App = () => {
   // Workflow states
   const [workflows, setWorkflows] = useState([]);
   const [openWorkflow, setOpenWorkflow] = useState(null);
+
+  // Agent states
+  const [agents, setAgents] = useState([]);
+  const [activeAgent, setActiveAgent] = useState(null); // { id, name, model, ... }
+  const [agentPickerOpen, setAgentPickerOpen] = useState(false);
 
   // RAG States
   const [knowledgeBase, setKnowledgeBase] = useState([]);
@@ -131,6 +139,7 @@ const App = () => {
     fetchSettings();
     fetchTools();
     fetchRunningModels();
+    fetchAgents();
 
     const es = new EventSource(`${API_BASE}/ollama/ps/stream`);
     es.onmessage = (e) => {
@@ -147,6 +156,10 @@ const App = () => {
 
   const fetchWorkflows = async () => {
     try { const r = await axios.get(`${API_BASE}/workflows/`); setWorkflows(r.data); } catch {}
+  };
+
+  const fetchAgents = async () => {
+    try { const r = await axios.get(`${API_BASE}/agents/`); setAgents(r.data); } catch {}
   };
 
   const createWorkflow = async () => {
@@ -467,9 +480,10 @@ const App = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: selectedModel,
+          model: activeAgent?.model || selectedModel,
           message: textToSend,
           session_id: currentSessionId,
+          agent_id: activeAgent?.id || null,
           temperature: settings.gen_temperature,
           top_p: settings.gen_top_p,
           num_predict: settings.gen_num_predict === -1 ? null : settings.gen_num_predict,
@@ -486,7 +500,9 @@ const App = () => {
         role: 'assistant',
         content: '',
         thinking: '',
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
+        agent_name: activeAgent?.name ?? null,
+        agent_color: activeAgent?.color ?? null,
       };
 
       setMessages(prev => [...prev, assistantMsg]);
@@ -524,7 +540,7 @@ const App = () => {
             } else if (data.tool_calls) {
               // Spezza il messaggio: la pill dei tool call + nuovo messaggio per la risposta finale
               const pillMsg = { ...assistantMsg, tool_calls: data.tool_calls, content: '' };
-              assistantMsg = { role: 'assistant', content: '', thinking: '', created_at: new Date().toISOString() };
+              assistantMsg = { role: 'assistant', content: '', thinking: '', created_at: new Date().toISOString(), agent_name: activeAgent?.name ?? null, agent_color: activeAgent?.color ?? null };
               setMessages(prev => {
                 const updated = [...prev];
                 updated[updated.length - 1] = pillMsg;
@@ -1347,6 +1363,7 @@ const App = () => {
 
           <div className="space-y-1 border-t border-zinc-700/40 pt-6">
             {[
+              { tab: 'agents',   icon: <Bot        size={18} />, label: 'Agenti' },
               { tab: 'db',       icon: <Database   size={18} />, label: 'Sistema RAG' },
               { tab: 'workflow', icon: <GitBranch  size={18} />, label: 'Workflow' },
               { tab: 'mcp',      icon: <Plug       size={18} />, label: 'MCP' },
@@ -1382,6 +1399,7 @@ const App = () => {
              activeTab === 'settings' ? "Impostazioni" :
              activeTab === 'tools' ? "Strumenti" :
              activeTab === 'mcp' ? "MCP Servers" :
+             activeTab === 'agents' ? "Agenti" :
              activeTab === 'workflow' ? (openWorkflow ? openWorkflow.name : "Workflow") :
              "Knowledge Base"}
           </h2>
@@ -1489,17 +1507,21 @@ const App = () => {
                 return (
                 <React.Fragment key={i}>
                   <div className={`flex items-start space-x-4 ${msg.role === 'user' ? 'flex-row-reverse space-x-reverse' : ''}`}>
-                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-                      msg.role === 'assistant'
-                        ? 'bg-gradient-to-br from-orange-500 to-orange-700 shadow-lg shadow-orange-900/40'
-                        : 'bg-zinc-600/80'
-                    }`}>
-                      {msg.role === 'assistant'
-                        ? <Layers size={15} />
-                        : <span className="text-[10px] font-bold text-zinc-200">{(settings.user_name?.[0] || 'IO').toUpperCase()}</span>
-                      }
-                    </div>
+                    {msg.role === 'assistant' ? (
+                      <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={avatarGradientStyle(msg.agent_color)}>
+                        <Layers size={15} />
+                      </div>
+                    ) : (
+                      <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 bg-zinc-600/80">
+                        <span className="text-[10px] font-bold text-zinc-200">{(settings.user_name?.[0] || 'IO').toUpperCase()}</span>
+                      </div>
+                    )}
                     <div className={`max-w-[80%] flex flex-col space-y-2`}>
+                      {msg.role === 'assistant' && (
+                        <p className="text-[10px] font-semibold text-zinc-500 px-1">
+                          {msg.agent_name ?? 'Efesto'}
+                        </p>
+                      )}
                       {msg.role === 'assistant' && msg.thinking && (
                         <div className="bg-zinc-700/30 border border-zinc-600/40 rounded-xl overflow-hidden">
                           <button
@@ -1519,11 +1541,13 @@ const App = () => {
                           )}
                         </div>
                       )}
-                      <div className={`p-4 rounded-2xl relative group ${
-                        msg.role === 'assistant'
-                          ? 'bg-zinc-800/60 border border-zinc-700/60 shadow-sm'
-                          : 'bg-gradient-to-br from-orange-600/20 to-orange-800/10 border border-orange-500/25 shadow-sm'
-                      }`}>
+                      <div
+                        className={`p-4 rounded-2xl relative group border shadow-sm ${msg.role === 'assistant' ? '' : 'border-orange-500/25'}`}
+                        style={msg.role === 'assistant'
+                          ? (msg.agent_color ? bubbleStyle(msg.agent_color) : { background: 'rgba(39,39,42,0.6)', borderColor: 'rgba(63,63,70,0.6)' })
+                          : { background: 'linear-gradient(135deg, rgba(234,88,12,0.12), rgba(154,52,18,0.08))' }
+                        }
+                      >
                         <div className={`prose prose-sm prose-invert max-w-none ${isStreamingThis && !msg.content ? '' : ''}`}>
                           <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeHighlight, rehypeKatex]}>
                             {msg.content || (isStreamingThis ? "" : "")}
@@ -1573,6 +1597,12 @@ const App = () => {
             <div className="p-12">{renderDatabase()}</div>
           ) : activeTab === 'tools' ? (
             <div className="p-12">{renderTools()}</div>
+          ) : activeTab === 'agents' ? (
+            <div className="p-12">
+              <Suspense fallback={<div className="flex items-center justify-center py-12 text-zinc-600 text-sm">Caricamento...</div>}>
+                <AgentsPanel models={models} />
+              </Suspense>
+            </div>
           ) : activeTab === 'mcp' ? (
             <div className="p-12">
               <Suspense fallback={<div className="flex items-center justify-center py-12 text-zinc-600 text-sm">Caricamento...</div>}>
@@ -1613,6 +1643,50 @@ const App = () => {
         {activeTab === 'chat' && (
           <div className="p-8 shrink-0">
             <div className="max-w-4xl mx-auto relative flex items-end">
+              {/* Agent selector button — bottom-left inside input */}
+              {agents.length > 0 && (
+                <div className="absolute left-3 bottom-3 z-10">
+                  <button
+                    onClick={() => setAgentPickerOpen(v => !v)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all ${
+                      activeAgent
+                        ? 'bg-orange-500/20 border border-orange-500/40 text-orange-400 hover:bg-orange-500/30'
+                        : 'bg-zinc-700/50 border border-zinc-600/40 text-zinc-400 hover:bg-zinc-700/80 hover:text-zinc-300'
+                    }`}
+                    title="Seleziona agente"
+                  >
+                    <Bot size={12} />
+                    <span className="max-w-[100px] truncate">{activeAgent ? activeAgent.name : 'Agente'}</span>
+                  </button>
+                  {agentPickerOpen && (
+                    <>
+                      <div className="fixed inset-0" onClick={() => setAgentPickerOpen(false)} />
+                      <div className="absolute bottom-full mb-2 left-0 bg-zinc-800 border border-zinc-700/60 rounded-xl shadow-xl shadow-black/40 min-w-[180px] overflow-hidden z-20">
+                        <button
+                          onClick={() => { setActiveAgent(null); setAgentPickerOpen(false); }}
+                          className={`w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-zinc-700/60 transition-colors text-left ${!activeAgent ? 'text-orange-400 font-medium' : 'text-zinc-400'}`}
+                        >
+                          <Bot size={11} />
+                          <span>Efesto (globale)</span>
+                          {!activeAgent && <span className="ml-auto text-orange-500">✓</span>}
+                        </button>
+                        <div className="border-t border-zinc-700/40" />
+                        {agents.map(a => (
+                          <button
+                            key={a.id}
+                            onClick={() => { setActiveAgent(a); setAgentPickerOpen(false); }}
+                            className={`w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-zinc-700/60 transition-colors text-left ${activeAgent?.id === a.id ? 'text-orange-400 font-medium' : 'text-zinc-300'}`}
+                          >
+                            <Bot size={11} />
+                            <span className="truncate">{a.name}</span>
+                            {activeAgent?.id === a.id && <span className="ml-auto text-orange-500 shrink-0">✓</span>}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
               <textarea
                 ref={textareaRef}
                 rows={1}
@@ -1631,7 +1705,7 @@ const App = () => {
                 }}
                 placeholder="Invia un messaggio a Efesto..."
                 style={{ resize: 'none', maxHeight: '200px', overflowY: 'hidden' }}
-                className="w-full bg-zinc-800/70 border border-zinc-700/60 rounded-2xl py-4 px-6 pr-14 outline-none focus:border-orange-500/50 focus:ring-2 focus:ring-orange-500/10 transition-all shadow-xl shadow-black/30 placeholder:text-zinc-500 custom-scrollbar"
+                className={`w-full bg-zinc-800/70 border border-zinc-700/60 rounded-2xl py-4 pr-14 outline-none focus:border-orange-500/50 focus:ring-2 focus:ring-orange-500/10 transition-all shadow-xl shadow-black/30 placeholder:text-zinc-500 custom-scrollbar ${agents.length > 0 ? 'pl-[7.5rem]' : 'px-6'}`}
               />
               {isLoading ? (
                 <button
@@ -1657,9 +1731,18 @@ const App = () => {
       {/* SIDEBAR DESTRA — processo in tempo reale */}
       {activeTab === 'chat' && (
         <aside className="w-48 bg-[#20202a] border-l border-zinc-700/40 flex flex-col shrink-0">
-          <div className="h-14 px-4 border-b border-zinc-700/40 flex items-center space-x-2">
-            <Zap size={12} className="text-orange-500" />
+          <div className="h-14 px-4 border-b border-zinc-700/40 flex items-center gap-2 min-w-0">
+            <Zap size={12} className="text-orange-500 shrink-0" />
             <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Processo</span>
+            {activeAgent && (
+              <div className="ml-auto flex items-center gap-1.5 min-w-0">
+                <span
+                  className="w-2 h-2 rounded-full shrink-0"
+                  style={{ background: getAgentColor(activeAgent.color).from }}
+                />
+                <span className="text-[10px] text-zinc-400 font-medium truncate">{activeAgent.name}</span>
+              </div>
+            )}
           </div>
 
           {/* Token stats */}
