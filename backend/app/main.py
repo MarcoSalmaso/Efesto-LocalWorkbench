@@ -8,6 +8,7 @@ from pydantic import BaseModel
 import ollama
 import json
 import asyncio
+import threading
 import uuid
 import numpy as np
 from datetime import datetime, timezone
@@ -577,6 +578,38 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
     db.commit()
 
     async def generate():
+        loop = asyncio.get_event_loop()
+        cancel_ev = threading.Event()
+        full_content = ""
+        full_thinking = ""
+        msg_agent_name = None
+        msg_agent_color = None
+
+        def _ollama_to_queue(q: asyncio.Queue, **chat_kwargs):
+            """Esegue ollama.chat (sincrono) in un thread daemon e mette i chunk nella queue."""
+            def _worker():
+                try:
+                    for chunk in ollama.chat(**chat_kwargs):
+                        if cancel_ev.is_set():
+                            break
+                        loop.call_soon_threadsafe(q.put_nowait, ("chunk", chunk))
+                except Exception as exc:
+                    loop.call_soon_threadsafe(q.put_nowait, ("error", exc))
+                finally:
+                    loop.call_soon_threadsafe(q.put_nowait, ("done", None))
+            threading.Thread(target=_worker, daemon=True).start()
+
+        async def stream_ollama(**chat_kwargs):
+            q: asyncio.Queue = asyncio.Queue()
+            _ollama_to_queue(q, **chat_kwargs)
+            while True:
+                kind, val = await q.get()
+                if kind == "done":
+                    return
+                if kind == "error":
+                    raise val
+                yield val
+
         try:
             # Risolvi agente (se presente)
             agent = None
@@ -600,8 +633,6 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
                 ollama_messages.append(msg_dict)
             ollama_messages.append({'role': 'user', 'content': request.message})
 
-            full_content = ""
-            full_thinking = ""
             tool_calls_raw = []
             first_thinking = True
             first_content = True
@@ -628,7 +659,7 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
                     pass
             all_tools = all_native + all_mcp
 
-            for chunk in ollama.chat(
+            async for chunk in stream_ollama(
                 model=active_model,
                 messages=ollama_messages,
                 stream=True,
@@ -732,7 +763,7 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
 
                 yield json.dumps({"step": "generating"}) + "\n"
 
-                for chunk in ollama.chat(
+                async for chunk in stream_ollama(
                     model=active_model,
                     messages=ollama_messages,
                     stream=True,
@@ -761,6 +792,21 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
                 save_db.commit()
 
             yield json.dumps({"step": "done"}) + "\n"
+
+        except (GeneratorExit, asyncio.CancelledError):
+            # Il client ha chiuso la connessione: ferma il thread ollama e salva il parziale
+            cancel_ev.set()
+            if full_content:
+                with Session(engine) as save_db:
+                    save_db.add(ChatMessage(
+                        session_id=session_id,
+                        role="assistant",
+                        content=full_content,
+                        thinking=full_thinking or None,
+                        agent_name=msg_agent_name,
+                        agent_color=msg_agent_color,
+                    ))
+                    save_db.commit()
 
         except Exception as e:
             yield json.dumps({"error": str(e)}) + "\n"

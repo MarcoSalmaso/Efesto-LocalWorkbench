@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Plus, Trash2, RefreshCw, ChevronDown, ChevronRight, ToggleLeft, ToggleRight, Plug, Wrench, AlertCircle, CheckCircle2, Loader2, X } from 'lucide-react';
+import { Plus, Trash2, RefreshCw, ChevronDown, ChevronRight, ToggleLeft, ToggleRight, Plug, Wrench, AlertCircle, CheckCircle2, Loader2, X, Pencil, Save } from 'lucide-react';
 
 const API = 'http://localhost:8006';
 
@@ -103,6 +103,10 @@ function ServerCard({ server, onRefresh }) {
   const [expanded, setExpanded] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [editingJson, setEditingJson] = useState(false);
+  const [jsonText, setJsonText] = useState('');
+  const [jsonError, setJsonError] = useState('');
+  const [saving, setSaving] = useState(false);
 
   const toggle = async () => {
     const newEnabled = !server.config.enabled;
@@ -125,6 +129,38 @@ function ServerCard({ server, onRefresh }) {
       await axios.delete(`${API}/mcp/servers/${server.name}`);
       onRefresh();
     } finally { setDeleting(false); }
+  };
+
+  const startEdit = () => {
+    setJsonText(JSON.stringify(server.config, null, 2));
+    setJsonError('');
+    setEditingJson(true);
+  };
+
+  const cancelEdit = () => {
+    setEditingJson(false);
+    setJsonError('');
+  };
+
+  const saveJson = async () => {
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch {
+      setJsonError('JSON non valido.');
+      return;
+    }
+    const { command, args, env, enabled } = parsed;
+    if (!command) { setJsonError('Il campo "command" è obbligatorio.'); return; }
+    setSaving(true);
+    setJsonError('');
+    try {
+      await axios.patch(`${API}/mcp/servers/${server.name}`, { command, args: args ?? [], env: env ?? {}, enabled: enabled ?? true });
+      setEditingJson(false);
+      onRefresh();
+    } catch (e) {
+      setJsonError(e.response?.data?.detail || 'Errore durante il salvataggio.');
+    } finally { setSaving(false); }
   };
 
   const enabled = server.config.enabled !== false;
@@ -196,10 +232,42 @@ function ServerCard({ server, onRefresh }) {
           )}
 
           <div>
-            <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1">Config JSON</p>
-            <pre className="text-[10px] text-zinc-400 font-mono bg-zinc-900/60 border border-zinc-700/40 rounded-xl px-3 py-2 overflow-x-auto">
-              {JSON.stringify(server.config, null, 2)}
-            </pre>
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Config JSON</p>
+              {!editingJson ? (
+                <button onClick={startEdit}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-zinc-700/50 border border-zinc-600/50 text-zinc-400 text-[10px] hover:bg-zinc-700 hover:text-zinc-200 transition-all">
+                  <Pencil size={9} /> Modifica
+                </button>
+              ) : (
+                <div className="flex items-center gap-1">
+                  <button onClick={cancelEdit}
+                    className="px-2 py-0.5 rounded-lg bg-zinc-700/50 border border-zinc-600/50 text-zinc-400 text-[10px] hover:bg-zinc-700 hover:text-zinc-200 transition-all">
+                    Annulla
+                  </button>
+                  <button onClick={saveJson} disabled={saving}
+                    className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-gradient-to-br from-orange-500 to-orange-700 text-white text-[10px] font-bold hover:from-orange-400 hover:to-orange-600 transition-all disabled:opacity-50">
+                    {saving ? <Loader2 size={9} className="animate-spin" /> : <Save size={9} />} Salva
+                  </button>
+                </div>
+              )}
+            </div>
+            {editingJson ? (
+              <>
+                <textarea
+                  className="w-full text-[10px] text-zinc-300 font-mono bg-zinc-900/60 border border-orange-500/40 rounded-xl px-3 py-2 outline-none resize-none focus:border-orange-500/70 transition-all"
+                  rows={10}
+                  value={jsonText}
+                  onChange={e => { setJsonText(e.target.value); setJsonError(''); }}
+                  spellCheck={false}
+                />
+                {jsonError && <p className="text-[10px] text-red-400 mt-1">{jsonError}</p>}
+              </>
+            ) : (
+              <pre className="text-[10px] text-zinc-400 font-mono bg-zinc-900/60 border border-zinc-700/40 rounded-xl px-3 py-2 overflow-x-auto">
+                {JSON.stringify(server.config, null, 2)}
+              </pre>
+            )}
           </div>
         </div>
       )}
