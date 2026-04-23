@@ -12,7 +12,7 @@ import threading
 import uuid
 import numpy as np
 from datetime import datetime, timezone
-from .models import ModelConfig, ToolDefinition, ChatSession, ChatMessage, SystemSettings, KnowledgeChunk, Workflow, Agent
+from .models import ModelConfig, ToolDefinition, ChatSession, ChatMessage, SystemSettings, KnowledgeChunk, Workflow, Agent, Prompt
 from .mcp_manager import mcp_manager, load_config, save_config
 
 sqlite_file_name = "efesto.db"
@@ -1170,5 +1170,48 @@ def delete_agent(agent_id: int, session: Session = Depends(get_session)):
     if not agent:
         raise HTTPException(404, "Agente non trovato")
     session.delete(agent)
+    session.commit()
+    return {"ok": True}
+
+
+# ── Prompt Library ─────────────────────────────────────────────────────────────
+
+class PromptPayload(BaseModel):
+    title: str
+    content: str
+    tags: str = ""
+
+@app.get("/prompts/")
+def list_prompts(session: Session = Depends(get_session)):
+    return session.exec(select(Prompt).order_by(Prompt.created_at.desc())).all()
+
+@app.post("/prompts/")
+def create_prompt(payload: PromptPayload, session: Session = Depends(get_session)):
+    prompt = Prompt(**payload.dict())
+    session.add(prompt)
+    session.commit()
+    session.refresh(prompt)
+    return prompt
+
+@app.patch("/prompts/{prompt_id}")
+def update_prompt(prompt_id: int, payload: dict, session: Session = Depends(get_session)):
+    prompt = session.get(Prompt, prompt_id)
+    if not prompt:
+        raise HTTPException(404, "Prompt non trovato")
+    for key, val in payload.items():
+        if hasattr(prompt, key):
+            setattr(prompt, key, val)
+    prompt.updated_at = datetime.now(timezone.utc)
+    session.add(prompt)
+    session.commit()
+    session.refresh(prompt)
+    return prompt
+
+@app.delete("/prompts/{prompt_id}")
+def delete_prompt(prompt_id: int, session: Session = Depends(get_session)):
+    prompt = session.get(Prompt, prompt_id)
+    if not prompt:
+        raise HTTPException(404, "Prompt non trovato")
+    session.delete(prompt)
     session.commit()
     return {"ok": True}

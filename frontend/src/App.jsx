@@ -3,8 +3,9 @@ import { avatarGradientStyle, bubbleStyle, getAgentColor } from './agents/agentC
 import axios from 'axios';
 const WorkflowEditor = lazy(() => import('./workflow/WorkflowEditor'));
 const WorkflowList   = lazy(() => import('./workflow/WorkflowList'));
-const McpPanel       = lazy(() => import('./mcp/McpPanel'));
-const AgentsPanel    = lazy(() => import('./agents/AgentsPanel'));
+const McpPanel        = lazy(() => import('./mcp/McpPanel'));
+const AgentsPanel     = lazy(() => import('./agents/AgentsPanel'));
+const PromptLibrary   = lazy(() => import('./prompts/PromptLibrary'));
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -54,6 +55,7 @@ import {
   GitBranch,
   Plug,
   Bot,
+  BookOpen,
 } from 'lucide-react';
 
 const API_BASE = "http://localhost:8006";
@@ -90,7 +92,13 @@ const App = () => {
   // Agent states
   const [agents, setAgents] = useState([]);
   const [activeAgent, setActiveAgent] = useState(null); // { id, name, model, ... }
-  const [agentPickerOpen, setAgentPickerOpen] = useState(false);
+
+  // Prompt Library states
+  const [prompts, setPrompts] = useState([]);
+
+  // Chat tool panel: null | 'menu' | 'agents' | 'prompts'
+  const [chatPanel, setChatPanel] = useState(null);
+  const [promptSearch, setPromptSearch] = useState('');
 
   // RAG States
   const [knowledgeBase, setKnowledgeBase] = useState([]);
@@ -140,6 +148,7 @@ const App = () => {
     fetchTools();
     fetchRunningModels();
     fetchAgents();
+    fetchPrompts();
 
     const es = new EventSource(`${API_BASE}/ollama/ps/stream`);
     es.onmessage = (e) => {
@@ -152,6 +161,7 @@ const App = () => {
   useEffect(() => {
     if (activeTab === 'db') fetchKnowledgeBase();
     if (activeTab === 'workflow') fetchWorkflows();
+    if (activeTab === 'chat') { fetchAgents(); fetchPrompts(); }
   }, [activeTab]);
 
   const fetchWorkflows = async () => {
@@ -160,6 +170,10 @@ const App = () => {
 
   const fetchAgents = async () => {
     try { const r = await axios.get(`${API_BASE}/agents/`); setAgents(r.data); } catch {}
+  };
+
+  const fetchPrompts = async () => {
+    try { const r = await axios.get(`${API_BASE}/prompts/`); setPrompts(r.data); } catch {}
   };
 
   const createWorkflow = async () => {
@@ -1364,6 +1378,7 @@ const App = () => {
           <div className="space-y-1 border-t border-zinc-700/40 pt-6">
             {[
               { tab: 'agents',   icon: <Bot        size={18} />, label: 'Agenti' },
+              { tab: 'prompts',  icon: <BookOpen   size={18} />, label: 'Prompt Library' },
               { tab: 'db',       icon: <Database   size={18} />, label: 'Sistema RAG' },
               { tab: 'workflow', icon: <GitBranch  size={18} />, label: 'Workflow' },
               { tab: 'mcp',      icon: <Plug       size={18} />, label: 'MCP' },
@@ -1400,6 +1415,7 @@ const App = () => {
              activeTab === 'tools' ? "Strumenti" :
              activeTab === 'mcp' ? "MCP Servers" :
              activeTab === 'agents' ? "Agenti" :
+             activeTab === 'prompts' ? "Prompt Library" :
              activeTab === 'workflow' ? (openWorkflow ? openWorkflow.name : "Workflow") :
              "Knowledge Base"}
           </h2>
@@ -1603,6 +1619,12 @@ const App = () => {
                 <AgentsPanel models={models} />
               </Suspense>
             </div>
+          ) : activeTab === 'prompts' ? (
+            <div className="p-12">
+              <Suspense fallback={<div className="flex items-center justify-center py-12 text-zinc-600 text-sm">Caricamento...</div>}>
+                <PromptLibrary />
+              </Suspense>
+            </div>
           ) : activeTab === 'mcp' ? (
             <div className="p-12">
               <Suspense fallback={<div className="flex items-center justify-center py-12 text-zinc-600 text-sm">Caricamento...</div>}>
@@ -1643,50 +1665,195 @@ const App = () => {
         {activeTab === 'chat' && (
           <div className="p-8 shrink-0">
             <div className="max-w-4xl mx-auto relative flex items-end">
-              {/* Agent selector button — bottom-left inside input */}
-              {agents.length > 0 && (
-                <div className="absolute left-3 bottom-3 z-10">
+              {/* Chat tool panel — pulsante + unico espandibile */}
+              <div className="absolute left-3 bottom-3 z-10 flex items-center gap-1.5">
+                <div className="relative">
                   <button
-                    onClick={() => setAgentPickerOpen(v => !v)}
-                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all ${
-                      activeAgent
-                        ? 'bg-orange-500/20 border border-orange-500/40 text-orange-400 hover:bg-orange-500/30'
-                        : 'bg-zinc-700/50 border border-zinc-600/40 text-zinc-400 hover:bg-zinc-700/80 hover:text-zinc-300'
+                    onClick={() => { setChatPanel(p => p ? null : 'menu'); setPromptSearch(''); }}
+                    title="Strumenti chat"
+                    className={`w-7 h-7 flex items-center justify-center rounded-xl border transition-all ${
+                      chatPanel
+                        ? 'bg-orange-500/20 border-orange-500/40 text-orange-400'
+                        : 'bg-zinc-700/50 border-zinc-600/40 text-zinc-400 hover:bg-zinc-700/80 hover:text-zinc-300'
                     }`}
-                    title="Seleziona agente"
                   >
-                    <Bot size={12} />
-                    <span className="max-w-[100px] truncate">{activeAgent ? activeAgent.name : 'Agente'}</span>
+                    <Plus size={14} className={`transition-transform duration-200 ${chatPanel ? 'rotate-45' : ''}`} />
                   </button>
-                  {agentPickerOpen && (
+
+                  {chatPanel && (
                     <>
-                      <div className="fixed inset-0" onClick={() => setAgentPickerOpen(false)} />
-                      <div className="absolute bottom-full mb-2 left-0 bg-zinc-800 border border-zinc-700/60 rounded-xl shadow-xl shadow-black/40 min-w-[180px] overflow-hidden z-20">
-                        <button
-                          onClick={() => { setActiveAgent(null); setAgentPickerOpen(false); }}
-                          className={`w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-zinc-700/60 transition-colors text-left ${!activeAgent ? 'text-orange-400 font-medium' : 'text-zinc-400'}`}
-                        >
-                          <Bot size={11} />
-                          <span>Efesto (globale)</span>
-                          {!activeAgent && <span className="ml-auto text-orange-500">✓</span>}
-                        </button>
-                        <div className="border-t border-zinc-700/40" />
-                        {agents.map(a => (
-                          <button
-                            key={a.id}
-                            onClick={() => { setActiveAgent(a); setAgentPickerOpen(false); }}
-                            className={`w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-zinc-700/60 transition-colors text-left ${activeAgent?.id === a.id ? 'text-orange-400 font-medium' : 'text-zinc-300'}`}
-                          >
-                            <Bot size={11} />
-                            <span className="truncate">{a.name}</span>
-                            {activeAgent?.id === a.id && <span className="ml-auto text-orange-500 shrink-0">✓</span>}
-                          </button>
-                        ))}
+                      <div className="fixed inset-0" onClick={() => setChatPanel(null)} />
+                      <div className="absolute bottom-full mb-2 left-0 bg-zinc-900 border border-zinc-700/60 rounded-xl shadow-xl shadow-black/50 w-64 overflow-hidden z-20">
+
+                        {/* Header con breadcrumb */}
+                        <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-700/40 bg-zinc-800/60">
+                          {chatPanel !== 'menu' && (
+                            <button onClick={() => setChatPanel('menu')} className="text-zinc-500 hover:text-zinc-300 transition-colors">
+                              <ChevronRight size={13} className="rotate-180" />
+                            </button>
+                          )}
+                          <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
+                            {chatPanel === 'menu' ? 'Strumenti' : chatPanel === 'agents' ? 'Agente' : 'Prompt Library'}
+                          </span>
+                        </div>
+
+                        {/* Menu principale */}
+                        {chatPanel === 'menu' && (
+                          <div className="py-1">
+                            {agents.length > 0 && (
+                              <button
+                                onClick={() => setChatPanel('agents')}
+                                className="w-full flex items-center justify-between px-3 py-2.5 text-xs hover:bg-zinc-800/60 transition-colors text-left group"
+                              >
+                                <div className="flex items-center gap-2.5">
+                                  <div className="w-6 h-6 rounded-lg bg-zinc-700/60 flex items-center justify-center">
+                                    <Bot size={12} className="text-zinc-400 group-hover:text-zinc-200" />
+                                  </div>
+                                  <span className="text-zinc-300">Agente</span>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                  {activeAgent && (
+                                    <span className="text-[10px] text-zinc-500 max-w-[80px] truncate">{activeAgent.name}</span>
+                                  )}
+                                  <ChevronRight size={11} className="text-zinc-600" />
+                                </div>
+                              </button>
+                            )}
+                            <button
+                              onClick={() => { setChatPanel('prompts'); setPromptSearch(''); }}
+                              className="w-full flex items-center justify-between px-3 py-2.5 text-xs hover:bg-zinc-800/60 transition-colors text-left group"
+                            >
+                              <div className="flex items-center gap-2.5">
+                                <div className="w-6 h-6 rounded-lg bg-zinc-700/60 flex items-center justify-center">
+                                  <BookOpen size={12} className="text-zinc-400 group-hover:text-zinc-200" />
+                                </div>
+                                <span className="text-zinc-300">Prompt Library</span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                {prompts.length > 0 && (
+                                  <span className="text-[10px] text-zinc-600">{prompts.length}</span>
+                                )}
+                                <ChevronRight size={11} className="text-zinc-600" />
+                              </div>
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Sub-panel: Agenti */}
+                        {chatPanel === 'agents' && (
+                          <div className="max-h-60 overflow-y-auto custom-scrollbar py-1">
+                            <button
+                              onClick={() => { setActiveAgent(null); setChatPanel(null); }}
+                              className={`w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-zinc-800/60 transition-colors text-left ${!activeAgent ? 'text-orange-400 font-medium' : 'text-zinc-400'}`}
+                            >
+                              <Bot size={11} />
+                              <span>Efesto (globale)</span>
+                              {!activeAgent && <Check size={11} className="ml-auto" />}
+                            </button>
+                            <div className="border-t border-zinc-700/40 my-1" />
+                            {agents.map(a => (
+                              <button
+                                key={a.id}
+                                onClick={() => { setActiveAgent(a); setChatPanel(null); }}
+                                className={`w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-zinc-800/60 transition-colors text-left ${activeAgent?.id === a.id ? 'text-orange-400 font-medium' : 'text-zinc-300'}`}
+                              >
+                                <span className="w-2 h-2 rounded-full shrink-0" style={{ background: getAgentColor(a.color).from }} />
+                                <span className="truncate">{a.name}</span>
+                                {activeAgent?.id === a.id && <Check size={11} className="ml-auto shrink-0" />}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Sub-panel: Prompt */}
+                        {chatPanel === 'prompts' && (
+                          <>
+                            <div className="p-2 border-b border-zinc-700/40">
+                              <div className="relative">
+                                <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500" />
+                                <input
+                                  autoFocus
+                                  className="w-full bg-zinc-800/60 rounded-lg pl-7 pr-3 py-1.5 text-xs text-zinc-200 outline-none focus:ring-1 focus:ring-orange-500/40 placeholder:text-zinc-600"
+                                  placeholder="Cerca prompt..."
+                                  value={promptSearch}
+                                  onChange={e => setPromptSearch(e.target.value)}
+                                />
+                              </div>
+                            </div>
+                            <div className="max-h-56 overflow-y-auto custom-scrollbar">
+                              {prompts.filter(p => {
+                                const q = promptSearch.toLowerCase();
+                                return !q || p.title.toLowerCase().includes(q) || p.tags.toLowerCase().includes(q);
+                              }).length === 0 ? (
+                                <div className="py-6 text-center">
+                                  <p className="text-[11px] text-zinc-600 italic">
+                                    {prompts.length === 0 ? 'Nessun prompt salvato.' : 'Nessun risultato.'}
+                                  </p>
+                                  {prompts.length === 0 && (
+                                    <button
+                                      onClick={() => { setChatPanel(null); setActiveTab('prompts'); }}
+                                      className="mt-2 text-[11px] text-orange-400 hover:text-orange-300 transition-colors"
+                                    >
+                                      Vai alla Prompt Library →
+                                    </button>
+                                  )}
+                                </div>
+                              ) : (
+                                prompts.filter(p => {
+                                  const q = promptSearch.toLowerCase();
+                                  return !q || p.title.toLowerCase().includes(q) || p.tags.toLowerCase().includes(q);
+                                }).map(p => (
+                                  <button
+                                    key={p.id}
+                                    onClick={() => {
+                                      setInputText(p.content);
+                                      setChatPanel(null);
+                                      setTimeout(() => {
+                                        if (textareaRef.current) {
+                                          textareaRef.current.style.height = 'auto';
+                                          textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
+                                          textareaRef.current.focus();
+                                        }
+                                      }, 0);
+                                    }}
+                                    className="w-full text-left px-3 py-2.5 hover:bg-zinc-800/60 transition-colors border-b border-zinc-700/20 last:border-0"
+                                  >
+                                    <p className="text-xs font-medium text-zinc-200 truncate">{p.title}</p>
+                                    {p.tags && <p className="text-[10px] text-zinc-600 mt-0.5 truncate">{p.tags}</p>}
+                                  </button>
+                                ))
+                              )}
+                            </div>
+                          </>
+                        )}
                       </div>
                     </>
                   )}
                 </div>
-              )}
+
+                {/* Pill agente attivo */}
+                {activeAgent && (
+                  <button
+                    onClick={() => { setChatPanel('agents'); setPromptSearch(''); }}
+                    className="flex items-center gap-1.5 pl-2 pr-1.5 py-1 rounded-xl border text-[11px] font-medium transition-all hover:brightness-110"
+                    style={{
+                      background: `${getAgentColor(activeAgent.color).from}18`,
+                      borderColor: `${getAgentColor(activeAgent.color).from}50`,
+                      color: getAgentColor(activeAgent.color).from,
+                    }}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: getAgentColor(activeAgent.color).from }} />
+                    <span className="max-w-[80px] truncate">{activeAgent.name}</span>
+                    <span
+                      onClick={e => { e.stopPropagation(); setActiveAgent(null); }}
+                      className="ml-0.5 opacity-60 hover:opacity-100 transition-opacity cursor-pointer"
+                    >
+                      <X size={10} />
+                    </span>
+                  </button>
+                )}
+              </div>
+
               <textarea
                 ref={textareaRef}
                 rows={1}
@@ -1705,7 +1872,7 @@ const App = () => {
                 }}
                 placeholder="Invia un messaggio a Efesto..."
                 style={{ resize: 'none', maxHeight: '200px', overflowY: 'hidden' }}
-                className={`w-full bg-zinc-800/70 border border-zinc-700/60 rounded-2xl py-4 pr-14 outline-none focus:border-orange-500/50 focus:ring-2 focus:ring-orange-500/10 transition-all shadow-xl shadow-black/30 placeholder:text-zinc-500 custom-scrollbar ${agents.length > 0 ? 'pl-[7.5rem]' : 'px-6'}`}
+                className={`w-full bg-zinc-800/70 border border-zinc-700/60 rounded-2xl py-4 pr-14 outline-none focus:border-orange-500/50 focus:ring-2 focus:ring-orange-500/10 transition-all shadow-xl shadow-black/30 placeholder:text-zinc-500 custom-scrollbar ${activeAgent ? 'pl-[12rem]' : 'pl-[3rem]'}`}
               />
               {isLoading ? (
                 <button
