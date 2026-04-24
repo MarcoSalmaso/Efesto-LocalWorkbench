@@ -45,6 +45,7 @@ I modelli compatibili possono invocare autonomamente gli strumenti durante la co
 | `search_knowledge` | Ricerca semantica nella Knowledge Base RAG |
 | `read_file` | Legge file di testo dal filesystem locale |
 | `execute_python` | Esegue codice Python in un subprocess isolato (timeout 10s) |
+| `web_search` | Cerca informazioni aggiornate su internet via DuckDuckGo (no API key) |
 
 ### MCP (Model Context Protocol)
 - **Server MCP locali** — connetti qualsiasi server MCP tramite trasporto stdio (processi locali Python, Node.js, ecc.)
