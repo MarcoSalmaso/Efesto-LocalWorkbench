@@ -1892,7 +1892,7 @@ const App = () => {
                   }
                 }}
                 placeholder="Invia un messaggio a Efesto..."
-                style={{ resize: 'none', maxHeight: '200px', overflowY: 'hidden' }}
+                style={{ resize: 'none', maxHeight: '200px' }}
                 className={`w-full bg-zinc-800/70 border border-zinc-700/60 rounded-2xl py-4 pr-14 outline-none focus:border-orange-500/50 focus:ring-2 focus:ring-orange-500/10 transition-all shadow-xl shadow-black/30 placeholder:text-zinc-500 custom-scrollbar ${activeAgent ? 'pl-[12rem]' : 'pl-[3rem]'}`}
               />
               {isLoading ? (
