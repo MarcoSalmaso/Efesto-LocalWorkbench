@@ -12,7 +12,7 @@ import threading
 import uuid
 import numpy as np
 from datetime import datetime, timezone
-from .models import ChatSession, ChatMessage, SystemSettings, KnowledgeChunk, Workflow, Agent, Prompt
+from .models import ChatSession, ChatMessage, SystemSettings, KnowledgeChunk, Workflow, Agent, Prompt, Simulation, SimulationAgent, SimulationTurn
 from .mcp_manager import mcp_manager, load_config, save_config
 
 sqlite_file_name = "efesto.db"
@@ -1215,3 +1215,375 @@ def delete_prompt(prompt_id: int, session: Session = Depends(get_session)):
     session.delete(prompt)
     session.commit()
     return {"ok": True}
+
+# ── Simulazioni ──────────────────────────────────────────────────────────────
+
+class SimulationCreate(BaseModel):
+    name: str = "Nuova Simulazione"
+    world_prompt: str = ""
+    trigger_event: str = ""
+    max_rounds: int = 3
+    model: Optional[str] = None
+
+class SimulationUpdate(BaseModel):
+    name: Optional[str] = None
+    world_prompt: Optional[str] = None
+    trigger_event: Optional[str] = None
+    max_rounds: Optional[int] = None
+    model: Optional[str] = None
+    status: Optional[str] = None
+    analysis: Optional[str] = None
+
+class SimAgentCreate(BaseModel):
+    name: str
+    role: str = ""
+    system_prompt: str = ""
+    model: Optional[str] = None
+    order: int = 0
+
+class SimAgentUpdate(BaseModel):
+    name: Optional[str] = None
+    role: Optional[str] = None
+    system_prompt: Optional[str] = None
+    model: Optional[str] = None
+    order: Optional[int] = None
+
+@app.get("/simulations/")
+def list_simulations(session: Session = Depends(get_session)):
+    sims = session.exec(select(Simulation).order_by(Simulation.created_at.desc())).all()
+    result = []
+    for s in sims:
+        agents = session.exec(select(SimulationAgent).where(SimulationAgent.simulation_id == s.id)).all()
+        d = s.dict()
+        d["agent_count"] = len(agents)
+        result.append(d)
+    return result
+
+@app.post("/simulations/")
+def create_simulation(payload: SimulationCreate, session: Session = Depends(get_session)):
+    sim = Simulation(**payload.dict())
+    session.add(sim)
+    session.commit()
+    session.refresh(sim)
+    return sim
+
+@app.get("/simulations/{sim_id}")
+def get_simulation(sim_id: int, session: Session = Depends(get_session)):
+    sim = session.get(Simulation, sim_id)
+    if not sim:
+        raise HTTPException(404, "Simulazione non trovata")
+    return sim
+
+@app.patch("/simulations/{sim_id}")
+def update_simulation(sim_id: int, payload: SimulationUpdate, session: Session = Depends(get_session)):
+    sim = session.get(Simulation, sim_id)
+    if not sim:
+        raise HTTPException(404, "Simulazione non trovata")
+    for k, v in payload.dict(exclude_none=True).items():
+        setattr(sim, k, v)
+    sim.updated_at = datetime.now(timezone.utc)
+    session.add(sim)
+    session.commit()
+    session.refresh(sim)
+    return sim
+
+@app.delete("/simulations/{sim_id}")
+def delete_simulation(sim_id: int, session: Session = Depends(get_session)):
+    sim = session.get(Simulation, sim_id)
+    if not sim:
+        raise HTTPException(404, "Simulazione non trovata")
+    for turn in session.exec(select(SimulationTurn).where(SimulationTurn.simulation_id == sim_id)).all():
+        session.delete(turn)
+    for agent in session.exec(select(SimulationAgent).where(SimulationAgent.simulation_id == sim_id)).all():
+        session.delete(agent)
+    session.delete(sim)
+    session.commit()
+    return {"ok": True}
+
+@app.post("/simulations/{sim_id}/duplicate")
+def duplicate_simulation(sim_id: int, session: Session = Depends(get_session)):
+    sim = session.get(Simulation, sim_id)
+    if not sim:
+        raise HTTPException(404, "Simulazione non trovata")
+    new_sim = Simulation(
+        name=f"{sim.name} (copia)",
+        world_prompt=sim.world_prompt,
+        trigger_event=sim.trigger_event,
+        max_rounds=sim.max_rounds,
+        model=sim.model,
+    )
+    session.add(new_sim)
+    session.commit()
+    session.refresh(new_sim)
+    agents = session.exec(select(SimulationAgent).where(SimulationAgent.simulation_id == sim_id).order_by(SimulationAgent.order)).all()
+    for a in agents:
+        session.add(SimulationAgent(
+            simulation_id=new_sim.id,
+            name=a.name, role=a.role,
+            system_prompt=a.system_prompt,
+            model=a.model, order=a.order,
+        ))
+    session.commit()
+    return new_sim
+
+# — Agenti della simulazione —
+
+@app.get("/simulations/{sim_id}/agents")
+def list_sim_agents(sim_id: int, session: Session = Depends(get_session)):
+    return session.exec(
+        select(SimulationAgent)
+        .where(SimulationAgent.simulation_id == sim_id)
+        .order_by(SimulationAgent.order)
+    ).all()
+
+@app.post("/simulations/{sim_id}/agents")
+def create_sim_agent(sim_id: int, payload: SimAgentCreate, session: Session = Depends(get_session)):
+    if not session.get(Simulation, sim_id):
+        raise HTTPException(404, "Simulazione non trovata")
+    agent = SimulationAgent(simulation_id=sim_id, **payload.dict())
+    session.add(agent)
+    session.commit()
+    session.refresh(agent)
+    return agent
+
+@app.patch("/simulations/{sim_id}/agents/{agent_id}")
+def update_sim_agent(sim_id: int, agent_id: int, payload: SimAgentUpdate, session: Session = Depends(get_session)):
+    agent = session.get(SimulationAgent, agent_id)
+    if not agent or agent.simulation_id != sim_id:
+        raise HTTPException(404, "Agente non trovato")
+    for k, v in payload.dict(exclude_none=True).items():
+        setattr(agent, k, v)
+    session.add(agent)
+    session.commit()
+    session.refresh(agent)
+    return agent
+
+@app.delete("/simulations/{sim_id}/agents/{agent_id}")
+def delete_sim_agent(sim_id: int, agent_id: int, session: Session = Depends(get_session)):
+    agent = session.get(SimulationAgent, agent_id)
+    if not agent or agent.simulation_id != sim_id:
+        raise HTTPException(404, "Agente non trovato")
+    session.delete(agent)
+    session.commit()
+    return {"ok": True}
+
+@app.put("/simulations/{sim_id}/agents/reorder")
+def reorder_sim_agents(sim_id: int, agent_ids: List[int], session: Session = Depends(get_session)):
+    for i, aid in enumerate(agent_ids):
+        agent = session.get(SimulationAgent, aid)
+        if agent and agent.simulation_id == sim_id:
+            agent.order = i
+            session.add(agent)
+    session.commit()
+    return {"ok": True}
+
+# — Turni —
+
+@app.get("/simulations/{sim_id}/turns")
+def list_sim_turns(sim_id: int, session: Session = Depends(get_session)):
+    return session.exec(
+        select(SimulationTurn)
+        .where(SimulationTurn.simulation_id == sim_id)
+        .order_by(SimulationTurn.round_number, SimulationTurn.id)
+    ).all()
+
+# — Esecuzione simulazione (SSE streaming) —
+
+async def _run_simulation(sim_id: int):
+    with Session(engine) as session:
+        sim = session.get(Simulation, sim_id)
+        if not sim:
+            yield f"data: {json.dumps({'type':'error','message':'Simulazione non trovata'})}\n\n"
+            return
+
+        agents = session.exec(
+            select(SimulationAgent)
+            .where(SimulationAgent.simulation_id == sim_id)
+            .order_by(SimulationAgent.order)
+        ).all()
+
+        if not agents:
+            yield f"data: {json.dumps({'type':'error','message':'Nessun agente configurato'})}\n\n"
+            return
+
+        # Pulisci turni precedenti
+        for t in session.exec(select(SimulationTurn).where(SimulationTurn.simulation_id == sim_id)).all():
+            session.delete(t)
+        sim.status = "running"
+        sim.analysis = None
+        session.commit()
+
+        yield f"data: {json.dumps({'type':'start','total_rounds':sim.max_rounds,'agents':[{'id':a.id,'name':a.name,'role':a.role} for a in agents]})}\n\n"
+
+        history: list[dict] = []
+        default_model = sim.model or "llama3.2:3b"
+
+        try:
+            for round_num in range(1, sim.max_rounds + 1):
+                yield f"data: {json.dumps({'type':'round_start','round':round_num})}\n\n"
+
+                for agent in agents:
+                    yield f"data: {json.dumps({'type':'agent_start','agent_id':agent.id,'agent_name':agent.name,'role':agent.role,'round':round_num})}\n\n"
+
+                    history_text = ""
+                    if history:
+                        history_text = "\n\n--- Storico turni precedenti ---\n"
+                        cur_round = 0
+                        for h in history:
+                            if h["round"] != cur_round:
+                                cur_round = h["round"]
+                                history_text += f"\n[Round {cur_round}]\n"
+                            history_text += f"{h['agent_name']} ({h['role']}): {h['content']}\n"
+
+                    user_msg = (
+                        f"CONTESTO DEL MONDO:\n{sim.world_prompt}\n\n"
+                        f"EVENTO SCATENANTE:\n{sim.trigger_event}\n"
+                        f"{history_text}\n"
+                        f"Round {round_num}: Qual è la tua reazione? Cosa fai, dici o decidi?"
+                    )
+
+                    model = agent.model or default_model
+                    full_content = ""
+
+                    stream = await asyncio.to_thread(
+                        lambda m=model, sp=agent.system_prompt, um=user_msg: ollama.chat(
+                            model=m,
+                            messages=[
+                                {"role": "system", "content": sp},
+                                {"role": "user", "content": um},
+                            ],
+                            stream=True,
+                        )
+                    )
+
+                    async for chunk in _iter_ollama_stream(stream):
+                        token = chunk.message.content or ""
+                        full_content += token
+                        yield f"data: {json.dumps({'type':'token','content':token})}\n\n"
+
+                    turn = SimulationTurn(
+                        simulation_id=sim_id,
+                        round_number=round_num,
+                        agent_id=agent.id,
+                        agent_name=agent.name,
+                        content=full_content,
+                    )
+                    with Session(engine) as s2:
+                        s2.add(turn)
+                        s2.commit()
+
+                    history.append({"round": round_num, "agent_id": agent.id, "agent_name": agent.name, "role": agent.role, "content": full_content})
+                    yield f"data: {json.dumps({'type':'agent_end','agent_id':agent.id,'agent_name':agent.name,'round':round_num})}\n\n"
+
+                yield f"data: {json.dumps({'type':'round_end','round':round_num})}\n\n"
+
+            with Session(engine) as s2:
+                s2_sim = s2.get(Simulation, sim_id)
+                s2_sim.status = "completed"
+                s2_sim.updated_at = datetime.now(timezone.utc)
+                s2.add(s2_sim)
+                s2.commit()
+
+            yield f"data: {json.dumps({'type':'complete','simulation_id':sim_id})}\n\n"
+
+        except Exception as e:
+            with Session(engine) as s2:
+                s2_sim = s2.get(Simulation, sim_id)
+                if s2_sim:
+                    s2_sim.status = "draft"
+                    s2.add(s2_sim)
+                    s2.commit()
+            yield f"data: {json.dumps({'type':'error','message':str(e)})}\n\n"
+
+async def _iter_ollama_stream(stream):
+    for chunk in stream:
+        yield chunk
+
+@app.post("/simulations/{sim_id}/run")
+async def run_simulation(sim_id: int, session: Session = Depends(get_session)):
+    sim = session.get(Simulation, sim_id)
+    if not sim:
+        raise HTTPException(404, "Simulazione non trovata")
+    if sim.status == "running":
+        raise HTTPException(400, "Simulazione già in corso")
+    return StreamingResponse(
+        _run_simulation(sim_id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+# — Analisi simulazione (SSE streaming) —
+
+async def _analyze_simulation(sim_id: int, model: Optional[str]):
+    with Session(engine) as session:
+        sim = session.get(Simulation, sim_id)
+        if not sim:
+            yield f"data: {json.dumps({'type':'error','message':'Simulazione non trovata'})}\n\n"
+            return
+        turns = session.exec(
+            select(SimulationTurn)
+            .where(SimulationTurn.simulation_id == sim_id)
+            .order_by(SimulationTurn.round_number, SimulationTurn.id)
+        ).all()
+        agents = {a.id: a for a in session.exec(select(SimulationAgent).where(SimulationAgent.simulation_id == sim_id)).all()}
+
+    transcript = ""
+    cur_round = 0
+    for t in turns:
+        if t.round_number != cur_round:
+            cur_round = t.round_number
+            transcript += f"\n[Round {cur_round}]\n"
+        role = agents[t.agent_id].role if t.agent_id in agents else ""
+        transcript += f"{t.agent_name} ({role}): {t.content}\n"
+
+    user_msg = (
+        f"CONTESTO DEL MONDO:\n{sim.world_prompt}\n\n"
+        f"EVENTO SCATENANTE:\n{sim.trigger_event}\n\n"
+        f"TRASCRIZIONE COMPLETA:\n{transcript}\n\n"
+        "Fornisci un'analisi strutturata della simulazione con:\n"
+        "1. Dinamiche emerse\n2. Posizioni chiave degli agenti\n"
+        "3. Punti di svolta\n4. Implicazioni strategiche\n5. Fattori critici"
+    )
+
+    chosen_model = model or sim.model or "llama3.2:3b"
+    yield f"data: {json.dumps({'type':'start'})}\n\n"
+    full = ""
+
+    try:
+        stream = await asyncio.to_thread(
+            lambda: ollama.chat(
+                model=chosen_model,
+                messages=[
+                    {"role": "system", "content": "Sei un analista esperto di dinamiche organizzative e comportamento collettivo. Analizza simulazioni multi-agente con rigore analitico."},
+                    {"role": "user", "content": user_msg},
+                ],
+                stream=True,
+            )
+        )
+        async for chunk in _iter_ollama_stream(stream):
+            token = chunk.message.content or ""
+            full += token
+            yield f"data: {json.dumps({'type':'token','content':token})}\n\n"
+
+        with Session(engine) as s2:
+            s2_sim = s2.get(Simulation, sim_id)
+            s2_sim.analysis = full
+            s2_sim.updated_at = datetime.now(timezone.utc)
+            s2.add(s2_sim)
+            s2.commit()
+
+        yield f"data: {json.dumps({'type':'complete','content':full})}\n\n"
+
+    except Exception as e:
+        yield f"data: {json.dumps({'type':'error','message':str(e)})}\n\n"
+
+@app.post("/simulations/{sim_id}/analyze")
+async def analyze_simulation(sim_id: int, model: Optional[str] = None, session: Session = Depends(get_session)):
+    sim = session.get(Simulation, sim_id)
+    if not sim:
+        raise HTTPException(404, "Simulazione non trovata")
+    return StreamingResponse(
+        _analyze_simulation(sim_id, model),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

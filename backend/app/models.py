@@ -82,3 +82,37 @@ class MemoryEntry(SQLModel, table=True):
     content: str = Field(sa_column=Column(Text))
     metadata_info: Dict[str, Any] = Field(default={}, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class Simulation(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(default="Nuova Simulazione")
+    world_prompt: str = Field(default="", sa_column=Column(Text))
+    trigger_event: str = Field(default="", sa_column=Column(Text))
+    max_rounds: int = Field(default=3)
+    model: Optional[str] = Field(default=None)  # None = usa modello globale
+    status: str = Field(default="draft")  # draft | running | completed
+    analysis: Optional[str] = Field(default=None, sa_column=Column(Text))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    agents: List["SimulationAgent"] = Relationship(back_populates="simulation")
+    turns: List["SimulationTurn"] = Relationship(back_populates="simulation")
+
+class SimulationAgent(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    simulation_id: int = Field(foreign_key="simulation.id")
+    name: str
+    role: str = Field(default="")
+    system_prompt: str = Field(default="", sa_column=Column(Text))
+    model: Optional[str] = Field(default=None)
+    order: int = Field(default=0)
+    simulation: Simulation = Relationship(back_populates="agents")
+
+class SimulationTurn(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    simulation_id: int = Field(foreign_key="simulation.id")
+    round_number: int
+    agent_id: int
+    agent_name: str
+    content: str = Field(default="", sa_column=Column(Text))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    simulation: Simulation = Relationship(back_populates="turns")

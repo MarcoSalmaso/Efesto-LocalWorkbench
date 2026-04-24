@@ -6,6 +6,7 @@ const WorkflowList   = lazy(() => import('./workflow/WorkflowList'));
 const McpPanel        = lazy(() => import('./mcp/McpPanel'));
 const AgentsPanel     = lazy(() => import('./agents/AgentsPanel'));
 const PromptLibrary   = lazy(() => import('./prompts/PromptLibrary'));
+const SimulationPanel = lazy(() => import('./simulation/SimulationPanel'));
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -56,6 +57,7 @@ import {
   Plug,
   Bot,
   BookOpen,
+  FlaskConical,
 } from 'lucide-react';
 
 const API_BASE = "http://localhost:8006";
@@ -1398,13 +1400,14 @@ const App = () => {
 
           <div className="space-y-1 border-t border-zinc-700/40 pt-6">
             {[
-              { tab: 'agents',   icon: <Bot        size={18} />, label: 'Agenti' },
-              { tab: 'prompts',  icon: <BookOpen   size={18} />, label: 'Prompt Library' },
-              { tab: 'db',       icon: <Database   size={18} />, label: 'Sistema RAG' },
-              { tab: 'workflow', icon: <GitBranch  size={18} />, label: 'Workflow' },
-              { tab: 'mcp',      icon: <Plug       size={18} />, label: 'MCP' },
-              { tab: 'tools',    icon: <Hammer     size={18} />, label: 'Strumenti' },
-              { tab: 'settings', icon: <Settings   size={18} />, label: 'Impostazioni' },
+              { tab: 'agents',      icon: <Bot          size={18} />, label: 'Agenti' },
+              { tab: 'prompts',     icon: <BookOpen     size={18} />, label: 'Prompt Library' },
+              { tab: 'simulation',  icon: <FlaskConical size={18} />, label: 'Simulazioni' },
+              { tab: 'db',          icon: <Database     size={18} />, label: 'Sistema RAG' },
+              { tab: 'workflow',    icon: <GitBranch    size={18} />, label: 'Workflow' },
+              { tab: 'mcp',         icon: <Plug         size={18} />, label: 'MCP' },
+              { tab: 'tools',       icon: <Hammer       size={18} />, label: 'Strumenti' },
+              { tab: 'settings',    icon: <Settings     size={18} />, label: 'Impostazioni' },
             ].map(({ tab, icon, label }) => (
               <button
                 key={tab}
@@ -1437,6 +1440,7 @@ const App = () => {
              activeTab === 'mcp' ? "MCP Servers" :
              activeTab === 'agents' ? "Agenti" :
              activeTab === 'prompts' ? "Prompt Library" :
+             activeTab === 'simulation' ? "Simulazioni" :
              activeTab === 'workflow' ? (openWorkflow ? openWorkflow.name : "Workflow") :
              "Knowledge Base"}
           </h2>
@@ -1644,6 +1648,12 @@ const App = () => {
             <div className="p-12">
               <Suspense fallback={<div className="flex items-center justify-center py-12 text-zinc-600 text-sm">Caricamento...</div>}>
                 <PromptLibrary />
+              </Suspense>
+            </div>
+          ) : activeTab === 'simulation' ? (
+            <div className="p-12">
+              <Suspense fallback={<div className="flex items-center justify-center py-12 text-zinc-600 text-sm">Caricamento...</div>}>
+                <SimulationPanel />
               </Suspense>
             </div>
           ) : activeTab === 'mcp' ? (

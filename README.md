@@ -61,6 +61,16 @@ I modelli compatibili possono invocare autonomamente gli strumenti durante la co
 - **Esporta / Importa KB** — backup portabile in JSON con re-embedding automatico all'importazione
 - **Re-embedding automatico** — warning visivo quando il modello di embedding cambia, con bottone per rigenerare i vettori dai chunk salvati
 
+### Simulazioni
+- **Scenari multi-agente** — simula situazioni organizzative complesse prima di prendere decisioni reali
+- **Agenti configurabili** — ogni agente ha nome, ruolo, system prompt e modello opzionale; l'ordine di risposta è personalizzabile
+- **Streaming token per token** — i turni di ogni agente vengono generati in tempo reale con cursore animato
+- **Round multipli** — configura da 1 a 10 round; ogni agente vede il contesto completo dei turni precedenti
+- **Analisi AI** — al termine della simulazione, genera un'analisi strutturata con dinamiche emerse, posizioni chiave, punti di svolta e implicazioni strategiche
+- **Rendering Markdown** — le risposte degli agenti e l'analisi supportano Markdown completo
+- **Duplicazione** — clona una simulazione con tutti i suoi agenti per varianti rapide
+- **Persistenza SQLite** — simulazioni, agenti e turni salvati nel database locale
+
 ### Workflow
 - **Editor visivo a blocchi** — canvas drag-and-drop basato su React Flow
 - **Nodi disponibili**: Input, AI Prompt, Python, Output, Condition, RAG Search, Note
@@ -263,6 +273,19 @@ La configurazione viene salvata in `mcp_config.json` (ignorato da git). Copia `m
 | `POST` | `/knowledge/upload` | Carica e indicizza un documento |
 | `GET` | `/settings` | Legge la configurazione |
 | `POST` | `/settings` | Aggiorna la configurazione |
+| `GET` | `/simulations/` | Lista simulazioni |
+| `POST` | `/simulations/` | Crea simulazione |
+| `PATCH` | `/simulations/{id}` | Aggiorna simulazione |
+| `DELETE` | `/simulations/{id}` | Elimina simulazione |
+| `POST` | `/simulations/{id}/duplicate` | Duplica simulazione con agenti |
+| `GET` | `/simulations/{id}/agents` | Lista agenti della simulazione |
+| `POST` | `/simulations/{id}/agents` | Crea agente |
+| `PATCH` | `/simulations/{id}/agents/{aid}` | Aggiorna agente |
+| `DELETE` | `/simulations/{id}/agents/{aid}` | Elimina agente |
+| `PUT` | `/simulations/{id}/agents/reorder` | Riordina agenti |
+| `GET` | `/simulations/{id}/turns` | Lista turni della simulazione |
+| `POST` | `/simulations/{id}/run` | Esegui simulazione (SSE streaming) |
+| `POST` | `/simulations/{id}/analyze` | Genera analisi (SSE streaming) |
 | `GET` | `/ollama/list` | Lista modelli disponibili |
 | `GET` | `/ollama/ps/stream` | Stream SSE modelli in memoria |
 
