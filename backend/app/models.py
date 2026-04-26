@@ -17,6 +17,7 @@ class SystemSettings(SQLModel, table=True):
     gen_top_p: float = Field(default=0.9)
     gen_num_predict: int = Field(default=-1)
     default_model: str = Field(default="")
+    memory_injection_enabled: bool = Field(default=False)
     last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class KnowledgeChunk(SQLModel, table=True):

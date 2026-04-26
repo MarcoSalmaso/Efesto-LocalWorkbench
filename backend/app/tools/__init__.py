@@ -8,3 +8,5 @@ registry.register_tool(FileReaderTool())
 registry.register_tool(PythonExecutorTool())
 registry.register_tool(RagSearchTool())
 registry.register_tool(WebSearchTool())
+from .memory_tool import MemoryTool
+registry.register_tool(MemoryTool())

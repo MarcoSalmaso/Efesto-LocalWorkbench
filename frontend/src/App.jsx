@@ -7,6 +7,7 @@ const McpPanel        = lazy(() => import('./mcp/McpPanel'));
 const AgentsPanel     = lazy(() => import('./agents/AgentsPanel'));
 const PromptLibrary   = lazy(() => import('./prompts/PromptLibrary'));
 const SimulationPanel = lazy(() => import('./simulation/SimulationPanel'));
+const MemoryPanel     = lazy(() => import('./memory/MemoryPanel'));
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -87,6 +88,7 @@ const App = () => {
     gen_top_p: 0.9,
     gen_num_predict: -1,
     default_model: '',
+    memory_injection_enabled: false,
   });
 
   // Workflow states
@@ -564,7 +566,7 @@ const App = () => {
               } else {
                 setProcessingSteps(prev => {
                   const updated = prev.map(s => ({ ...s, status: 'done' }));
-                  return [...updated, { id: `${data.step}-${Date.now()}`, type: data.step, label, detail, status: 'active' }];
+                  return [...updated, { id: `${data.step}-${Date.now()}-${Math.random()}`, type: data.step, label, detail, status: 'active' }];
                 });
               }
             }
@@ -1305,6 +1307,24 @@ const App = () => {
           <p className="text-[10px] text-zinc-600">Numero massimo di token generati per risposta. -1 = illimitato (dipende dal contesto del modello).</p>
         </div>
 
+        {/* Memoria */}
+        <div className="border-t border-zinc-700/40 pt-6 space-y-3">
+          <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest flex items-center space-x-2">
+            <Brain size={14} /> <span>Memoria Persistente</span>
+          </label>
+          <div className="flex items-center justify-between bg-zinc-800/40 border border-zinc-700/50 rounded-xl px-4 py-3">
+            <div>
+              <p className="text-sm text-zinc-300 font-medium">Inietta memorie nella chat</p>
+              <p className="text-[11px] text-zinc-600 mt-0.5">Le memorie vengono aggiunte al system prompt ad ogni messaggio.</p>
+            </div>
+            <button
+              onClick={() => setSettings(s => ({ ...s, memory_injection_enabled: !s.memory_injection_enabled }))}
+              className={`relative w-11 h-6 rounded-full transition-all shrink-0 ml-4 ${settings.memory_injection_enabled ? 'bg-orange-600' : 'bg-zinc-700'}`}>
+              <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all ${settings.memory_injection_enabled ? 'left-5' : 'left-0.5'}`} />
+            </button>
+          </div>
+        </div>
+
         <button onClick={saveSettings}
           className="w-full bg-orange-600 hover:bg-orange-500 py-4 rounded-2xl font-bold flex items-center justify-center space-x-2 transition-all shadow-lg shadow-orange-900/10">
           <Save size={18} /><span>Salva Configurazioni</span>
@@ -1451,6 +1471,7 @@ const App = () => {
             <p className="text-[9px] font-bold text-zinc-600 uppercase tracking-widest mb-1 px-2">Sistema</p>
             <div className="space-y-px">
               {[
+                { tab: 'memory',   icon: <Brain size={15} />,     label: 'Memoria' },
                 { tab: 'db',       icon: <Database size={15} />,  label: 'RAG' },
                 { tab: 'mcp',      icon: <Plug size={15} />,      label: 'MCP' },
                 { tab: 'tools',    icon: <Hammer size={15} />,    label: 'Strumenti' },
@@ -1499,6 +1520,7 @@ const App = () => {
              activeTab === 'agents' ? "Agenti" :
              activeTab === 'prompts' ? "Prompt Library" :
              activeTab === 'simulation' ? "Simulazioni" :
+             activeTab === 'memory' ? "Memoria" :
              activeTab === 'workflow' ? (openWorkflow ? openWorkflow.name : "Workflow") :
              "Knowledge Base"}
           </h2>
@@ -1712,6 +1734,12 @@ const App = () => {
             <div className="p-12">
               <Suspense fallback={<div className="flex items-center justify-center py-12 text-zinc-600 text-sm">Caricamento...</div>}>
                 <SimulationPanel />
+              </Suspense>
+            </div>
+          ) : activeTab === 'memory' ? (
+            <div className="p-12">
+              <Suspense fallback={<div className="flex items-center justify-center py-12 text-zinc-600 text-sm">Caricamento...</div>}>
+                <MemoryPanel />
               </Suspense>
             </div>
           ) : activeTab === 'mcp' ? (

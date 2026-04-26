@@ -12,7 +12,7 @@ import threading
 import uuid
 import numpy as np
 from datetime import datetime, timezone
-from .models import ChatSession, ChatMessage, SystemSettings, KnowledgeChunk, Workflow, Agent, Prompt, Simulation, SimulationAgent, SimulationTurn
+from .models import ChatSession, ChatMessage, SystemSettings, KnowledgeChunk, Workflow, Agent, Prompt, Simulation, SimulationAgent, SimulationTurn, MemoryEntry
 from .mcp_manager import mcp_manager, load_config, save_config
 
 sqlite_file_name = "efesto.db"
@@ -60,6 +60,11 @@ def migrate_db():
                 conn.commit()
             except Exception:
                 pass
+        try:
+            conn.execute(text("ALTER TABLE systemsettings ADD COLUMN memory_injection_enabled INTEGER NOT NULL DEFAULT 0"))
+            conn.commit()
+        except Exception:
+            pass
 
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
@@ -250,12 +255,50 @@ def update_settings(new_settings: SystemSettings, session: Session = Depends(get
     db_settings.gen_top_p = new_settings.gen_top_p
     db_settings.gen_num_predict = new_settings.gen_num_predict
     db_settings.default_model = new_settings.default_model
+    db_settings.memory_injection_enabled = new_settings.memory_injection_enabled
     db_settings.last_updated = datetime.now(timezone.utc)
     session.add(db_settings)
     session.commit()
     session.refresh(db_settings)
     apply_rag_config(db_settings)
     return db_settings
+
+# --- Memoria persistente ---
+
+class MemoryPayload(BaseModel):
+    content: str
+
+@app.get("/memory/")
+def list_memories(session: Session = Depends(get_session)):
+    return session.exec(select(MemoryEntry).order_by(MemoryEntry.created_at)).all()
+
+@app.post("/memory/")
+def create_memory(payload: MemoryPayload, session: Session = Depends(get_session)):
+    entry = MemoryEntry(content=payload.content)
+    session.add(entry)
+    session.commit()
+    session.refresh(entry)
+    return entry
+
+@app.patch("/memory/{memory_id}")
+def update_memory(memory_id: int, payload: MemoryPayload, session: Session = Depends(get_session)):
+    entry = session.get(MemoryEntry, memory_id)
+    if not entry:
+        raise HTTPException(404, "Memoria non trovata")
+    entry.content = payload.content
+    session.add(entry)
+    session.commit()
+    session.refresh(entry)
+    return entry
+
+@app.delete("/memory/{memory_id}")
+def delete_memory(memory_id: int, session: Session = Depends(get_session)):
+    entry = session.get(MemoryEntry, memory_id)
+    if not entry:
+        raise HTTPException(404, "Memoria non trovata")
+    session.delete(entry)
+    session.commit()
+    return {"ok": True}
 
 # --- Knowledge Base (RAG) ---
 from .rag import rag_manager
@@ -638,6 +681,13 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
             active_model  = agent.model if agent and agent.model else request.model
             msg_agent_name  = agent.name  if agent else None
             msg_agent_color = agent.color if agent else None
+
+            # Iniezione memorie persistenti
+            if settings.memory_injection_enabled:
+                memories = db.exec(select(MemoryEntry).order_by(MemoryEntry.created_at)).all()
+                if memories:
+                    memory_block = "## Memorie sull'utente\n" + "\n".join(f"- {m.content}" for m in memories)
+                    system_prompt = f"{system_prompt}\n\n{memory_block}"
 
             ollama_messages = [{'role': 'system', 'content': system_prompt}]
             for m in history:

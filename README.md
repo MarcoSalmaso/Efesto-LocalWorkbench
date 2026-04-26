@@ -47,6 +47,7 @@ I modelli compatibili possono invocare autonomamente gli strumenti durante la co
 | `read_file` | Legge file di testo dal filesystem locale |
 | `execute_python` | Esegue codice Python in un subprocess isolato (timeout 10s) |
 | `web_search` | Cerca informazioni aggiornate su internet via DuckDuckGo (no API key) |
+| `manage_memory` | Salva, elimina ed elenca memorie persistenti sull'utente |
 
 ### MCP (Model Context Protocol)
 - **Server MCP locali** — connetti qualsiasi server MCP tramite trasporto stdio (processi locali Python, Node.js, ecc.)
@@ -61,6 +62,12 @@ I modelli compatibili possono invocare autonomamente gli strumenti durante la co
 - **Knowledge Base resiliente** — i chunk testuali sono salvati in SQLite separatamente dai vettori: cambiare modello di embedding non richiede di ricaricare i file
 - **Esporta / Importa KB** — backup portabile in JSON con re-embedding automatico all'importazione
 - **Re-embedding automatico** — warning visivo quando il modello di embedding cambia, con bottone per rigenerare i vettori dai chunk salvati
+
+### Memoria Persistente
+- **Memorie sull'utente** — fatti persistenti (preferenze, contesto, obiettivi) salvati in SQLite e ricaricabili tra sessioni
+- **Gestione manuale** — pannello dedicato per aggiungere, modificare ed eliminare memorie direttamente dall'interfaccia
+- **Gestione autonoma** — il modello può aggiornare le memorie via tool `manage_memory` durante la chat
+- **Iniezione opzionale** — impostazione per iniettare automaticamente tutte le memorie nel system prompt ad ogni risposta
 
 ### Simulazioni
 - **Scenari multi-agente** — simula situazioni organizzative complesse prima di prendere decisioni reali
@@ -88,7 +95,7 @@ I modelli compatibili possono invocare autonomamente gli strumenti durante la co
 
 | Layer | Tecnologie |
 |---|---|
-| Backend | Python 3.9+, FastAPI, SQLModel, Ollama SDK, LanceDB, PyArrow, httpx |
+| Backend | Python 3.9+, FastAPI, SQLModel, Ollama SDK, LanceDB, PyArrow, httpx, openpyxl |
 | Frontend | React 19, Vite, Tailwind CSS, React Flow, Axios, react-markdown, KaTeX, Lucide React |
 | Database | SQLite (chat, sessioni, agenti, prompt, workflow, config), LanceDB (vettori embedding) |
 | AI | Ollama (modelli locali), embedding con `ollama.embed()` batch API |
@@ -102,7 +109,7 @@ Efesto/
 ├── backend/
 │   ├── app/
 │   │   ├── main.py           # FastAPI app, endpoints, chat streaming
-│   │   ├── models.py         # Schema SQLite: settings, sessioni, agenti, prompt, workflow
+│   │   ├── models.py         # Schema SQLite: settings, sessioni, agenti, prompt, workflow, simulazioni, memorie
 │   │   ├── rag.py            # RagManager: chunking, embedding, ricerca LanceDB
 │   │   ├── extractors.py     # Estrazione testo da PDF, DOCX, CSV, JSON, HTML
 │   │   ├── mcp_manager.py    # Client MCP JSON-RPC 2.0 over stdio
@@ -111,7 +118,8 @@ Efesto/
 │   │       ├── registry.py   # ToolRegistry globale
 │   │       ├── rag_search.py
 │   │       ├── file_reader.py
-│   │       └── python_executor.py
+│   │       ├── python_executor.py
+│   │       └── memory_tool.py
 │   ├── mcp_servers/
 │   │   └── efesto_tools.py   # Server MCP di esempio (get_time, calculator, echo)
 │   ├── mcp_config.json           # Config MCP locale (gitignored)
@@ -125,6 +133,8 @@ Efesto/
     │   ├── agents/            # Pannello agenti + colori
     │   ├── prompts/           # Prompt Library
     │   ├── workflow/          # Editor workflow (WorkflowEditor, nodes, ConfigPanel)
+    │   ├── simulation/        # Pannello simulazioni multi-agente
+    │   ├── memory/            # Pannello memoria persistente
     │   ├── mcp/               # Pannello gestione MCP
     │   ├── main.jsx
     │   └── index.css
@@ -287,6 +297,10 @@ La configurazione viene salvata in `mcp_config.json` (ignorato da git). Copia `m
 | `GET` | `/simulations/{id}/turns` | Lista turni della simulazione |
 | `POST` | `/simulations/{id}/run` | Esegui simulazione (SSE streaming) |
 | `POST` | `/simulations/{id}/analyze` | Genera analisi (SSE streaming) |
+| `GET` | `/memory/` | Lista memorie persistenti |
+| `POST` | `/memory/` | Aggiunge una memoria |
+| `PATCH` | `/memory/{id}` | Modifica una memoria |
+| `DELETE` | `/memory/{id}` | Elimina una memoria |
 | `GET` | `/ollama/list` | Lista modelli disponibili |
 | `GET` | `/ollama/ps/stream` | Stream SSE modelli in memoria |
 
