@@ -8,6 +8,11 @@ Efesto è un'applicazione **local-first** per interagire con modelli AI locali (
 
 ## Funzionalità
 
+### Home
+- **Dashboard di benvenuto** — schermata iniziale con statistiche rapide (conversazioni, agenti, prompt, workflow) e accesso diretto a tutte le funzionalità
+- **Sessioni recenti** — ultime 6 conversazioni accessibili con un clic dalla home
+- **Stato backend** — indicatore visivo online/offline sempre in vista
+
 ### Chat
 - **Streaming in tempo reale** — risposte token per token con supporto al _thinking_ (chain-of-thought) per modelli come Qwen3 e Gemma4
 - **Velocità token/s** — contatore in tempo reale nella sidebar di destra
@@ -15,12 +20,15 @@ Efesto è un'applicazione **local-first** per interagire con modelli AI locali (
 - **Sidebar processo** — visualizzazione dei passi del modello: ragionamento, tool call, esecuzione, risposta; mostra l'agente attivo quando presente
 - **Artifacts** — blocchi HTML/SVG renderizzati in un iframe interattivo con tab Anteprima/Codice e apertura in nuova scheda
 - **Rendering Markdown + LaTeX** — GFM, syntax highlighting e formule matematiche (KaTeX)
-- **Sessioni persistenti** — conversazioni salvate in SQLite, ricaricabili dalla sidebar
-- **Ricerca nelle sessioni** — cerca per titolo e contenuto dei messaggi
-- **Rinomina sessioni** — inline, direttamente dalla sidebar
+- **Sessioni persistenti** — conversazioni salvate in SQLite, ricaricabili dal tab Conversazioni
 - **Parametri di generazione** — temperature, top-p e max token configurabili per sessione
 - **Strumenti chat** — pulsante `+` nella textarea apre un pannello con accesso rapido ad agenti e prompt library; scalabile per future aggiunte
 - **Allegati in chat** — allega immagini (PNG, JPG, WebP, GIF) e documenti (PDF, DOCX, TXT, MD, CSV, JSON, HTML, XLSX) direttamente nella textarea; le immagini vengono inviate ai modelli vision, i documenti vengono estratti e iniettati nel contesto del messaggio
+
+### Conversazioni
+- **Pagina dedicata** — storico completo delle sessioni in un tab separato, con card che mostrano titolo, snippet e data
+- **Ricerca full-text** — filtra per titolo e contenuto dei messaggi con evidenziazione dei match
+- **Rinomina sessioni** — inline, direttamente dalla lista
 
 ### Modelli
 - **Selettore modello** — dropdown personalizzato con tutti i modelli Ollama disponibili
@@ -130,6 +138,7 @@ Efesto/
 └── frontend/
     ├── src/
     │   ├── App.jsx            # Componente React principale
+    │   ├── home/              # Homepage / dashboard
     │   ├── agents/            # Pannello agenti + colori
     │   ├── prompts/           # Prompt Library
     │   ├── workflow/          # Editor workflow (WorkflowEditor, nodes, ConfigPanel)
@@ -230,18 +239,18 @@ La configurazione viene salvata in `mcp_config.json` (ignorato da git). Copia `m
 
 ### Esportare
 
-**Database** → **Esporta**: scarica `efesto_kb_YYYYMMDD_HHMMSS.json` con tutti i chunk testuali.
+**RAG** → **Esporta**: scarica `efesto_kb_YYYYMMDD_HHMMSS.json` con tutti i chunk testuali.
 
 ### Importare su una nuova macchina
 
 1. Avvia Efesto sulla nuova macchina
-2. **Database** → **Importa** → seleziona il file JSON
+2. **RAG** → **Importa** → seleziona il file JSON
 3. I chunk vengono salvati e i vettori rigenerati automaticamente con il modello configurato
 
 ### Cambiare modello di embedding
 
 1. **Impostazioni** → cambia _Modello di Embedding_ → Salva
-2. **Database**: compare un warning con il pulsante **Rigenera Vettori**
+2. **RAG**: compare un warning con il pulsante **Rigenera Vettori**
 3. Efesto rilegge i chunk da SQLite e rigenera i vettori senza ricaricare i file originali
 
 ---
