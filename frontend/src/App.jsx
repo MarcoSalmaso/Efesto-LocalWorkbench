@@ -8,6 +8,7 @@ const AgentsPanel     = lazy(() => import('./agents/AgentsPanel'));
 const PromptLibrary   = lazy(() => import('./prompts/PromptLibrary'));
 const SimulationPanel = lazy(() => import('./simulation/SimulationPanel'));
 const MemoryPanel     = lazy(() => import('./memory/MemoryPanel'));
+const HomePage        = lazy(() => import('./home/HomePage'));
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -66,7 +67,7 @@ import {
 const API_BASE = "http://localhost:8006";
 
 const App = () => {
-  const [activeTab, setActiveTab] = useState('chat');
+  const [activeTab, setActiveTab] = useState('home');
   const [sessions, setSessions] = useState([]);
   const [currentSessionId, setCurrentSessionId] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -1444,6 +1445,18 @@ const App = () => {
 
         {/* Menu navigazione — sempre visibile in fondo */}
         <nav className="shrink-0 border-t border-zinc-700/40 px-3 py-3 space-y-4">
+          {/* Home */}
+          <div>
+            <button onClick={() => setActiveTab('home')}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all ${
+                activeTab === 'home' ? 'bg-orange-600/15 text-orange-400 font-medium' : 'text-zinc-500 hover:bg-zinc-700/40 hover:text-zinc-300'
+              }`}>
+              <span className={activeTab === 'home' ? 'text-orange-400' : 'text-zinc-600'}><Layers size={15} /></span>
+              Home
+              {activeTab === 'home' && <span className="ml-auto w-1 h-4 rounded-full bg-orange-500 opacity-80" />}
+            </button>
+          </div>
+
           {/* Workspace */}
           <div>
             <p className="text-[9px] font-bold text-zinc-600 uppercase tracking-widest mb-1 px-2">Workspace</p>
@@ -1513,7 +1526,8 @@ const App = () => {
             </button>
           )}
           <h2 className="text-sm font-semibold text-zinc-300 tracking-wide">
-            {activeTab === 'chat' ? (currentSessionId ? "Conversazione" : "Nuova Conversazione") :
+            {activeTab === 'home' ? "Home" :
+             activeTab === 'chat' ? (currentSessionId ? "Conversazione" : "Nuova Conversazione") :
              activeTab === 'settings' ? "Impostazioni" :
              activeTab === 'tools' ? "Strumenti" :
              activeTab === 'mcp' ? "MCP Servers" :
@@ -1586,7 +1600,21 @@ const App = () => {
         </header>
 
         <div className={`flex-1 min-h-0 ${activeTab === 'workflow' && openWorkflow ? 'overflow-hidden flex flex-col' : 'overflow-y-auto custom-scrollbar'}`}>
-          {activeTab === 'chat' ? (
+          {activeTab === 'home' ? (
+            <Suspense fallback={<div className="flex items-center justify-center py-12 text-zinc-600 text-sm">Caricamento...</div>}>
+              <HomePage
+                sessions={sessions}
+                agents={agents}
+                prompts={prompts}
+                workflows={workflows}
+                isBackendLive={isBackendLive}
+                settings={settings}
+                onNavigate={setActiveTab}
+                onLoadSession={loadSession}
+                onNewChat={startNewChat}
+              />
+            </Suspense>
+          ) : activeTab === 'chat' ? (
             <div className="p-8 space-y-6 max-w-5xl mx-auto">
               {messages.length === 0 && !isLoading && (
                 <div className="h-[60vh] flex flex-col items-center justify-center">
