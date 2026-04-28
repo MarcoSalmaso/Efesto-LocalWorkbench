@@ -1814,7 +1814,19 @@ const App = () => {
                 prose-li:text-zinc-300
                 prose-table:text-sm prose-th:text-zinc-300 prose-td:text-zinc-400
                 prose-hr:border-zinc-700/40">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{readmeContent}</ReactMarkdown>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    img: ({ src, alt, ...props }) => (
+                      <img
+                        src={src?.replace(/^\.\/assets\//, '/assets/')}
+                        alt={alt}
+                        className="rounded-xl max-w-full"
+                        {...props}
+                      />
+                    ),
+                  }}
+                >{readmeContent}</ReactMarkdown>
               </div>
             </div>
           ) : activeTab === 'workflow' ? (
