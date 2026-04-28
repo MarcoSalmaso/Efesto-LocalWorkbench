@@ -615,7 +615,17 @@ async def extract_chat_file(file: UploadFile = File(...)):
 @app.post("/chat")
 async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_session)):
     settings = db.exec(select(SystemSettings)).first() or SystemSettings()
-    
+
+    # Estraiamo subito tutti i valori scalari: db.commit() più avanti espira
+    # l'oggetto settings e accedervi dentro il generator async causerebbe
+    # "Instance is not bound to a Session" (refresh fallisce in contesto async).
+    cfg_system_prompt    = settings.system_prompt
+    cfg_memory_injection = settings.memory_injection_enabled
+    cfg_context_length   = settings.context_length
+    cfg_temperature      = settings.gen_temperature
+    cfg_top_p            = settings.gen_top_p
+    cfg_num_predict      = settings.gen_num_predict
+
     if not request.session_id:
         db_session = ChatSession(title=request.message[:30] + "...")
         db.add(db_session)
@@ -625,13 +635,19 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
     else:
         session_id = request.session_id
 
-    history = db.exec(
+    history_rows = db.exec(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
         .order_by(ChatMessage.created_at.desc())
-        .limit(settings.context_length)
+        .limit(cfg_context_length)
     ).all()
-    history.reverse()
+    history_rows.reverse()
+
+    # Convertiamo in dict plain prima del commit che espira gli ORM objects
+    history = [
+        {"role": m.role, "content": m.content, "tool_calls": m.tool_calls}
+        for m in history_rows
+    ]
 
     user_msg = ChatMessage(session_id=session_id, role="user", content=request.message)
     db.add(user_msg)
@@ -677,25 +693,26 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
                 with Session(engine) as adb:
                     agent = adb.get(Agent, request.agent_id)
 
-            system_prompt = (agent.system_prompt if agent and agent.system_prompt else settings.system_prompt)
+            system_prompt = (agent.system_prompt if agent and agent.system_prompt else cfg_system_prompt)
             active_model  = agent.model if agent and agent.model else request.model
             msg_agent_name  = agent.name  if agent else None
             msg_agent_color = agent.color if agent else None
 
-            # Iniezione memorie persistenti
-            if settings.memory_injection_enabled:
-                memories = db.exec(select(MemoryEntry).order_by(MemoryEntry.created_at)).all()
-                if memories:
-                    memory_block = "## Memorie sull'utente\n" + "\n".join(f"- {m.content}" for m in memories)
-                    system_prompt = f"{system_prompt}\n\n{memory_block}"
+            # Iniezione memorie persistenti (sessione fresca: il db principale è espirato)
+            if cfg_memory_injection:
+                with Session(engine) as mem_db:
+                    memories = mem_db.exec(select(MemoryEntry).order_by(MemoryEntry.created_at)).all()
+                    if memories:
+                        memory_block = "## Memorie sull'utente\n" + "\n".join(f"- {m.content}" for m in memories)
+                        system_prompt = f"{system_prompt}\n\n{memory_block}"
 
             ollama_messages = [{'role': 'system', 'content': system_prompt}]
             for m in history:
-                msg_dict = {'role': m.role, 'content': m.content}
-                if m.tool_calls:
+                msg_dict = {'role': m['role'], 'content': m['content']}
+                if m['tool_calls']:
                     msg_dict['tool_calls'] = [
                         {'function': tc['function']}
-                        for tc in m.tool_calls
+                        for tc in m['tool_calls']
                     ]
                 ollama_messages.append(msg_dict)
 
@@ -712,9 +729,9 @@ async def chat_with_tools(request: ChatRequest, db: Session = Depends(get_sessio
             first_content = True
 
             # Parametri generazione: request > agent > globale
-            temperature = request.temperature or (agent.temperature if agent else None) or settings.gen_temperature
-            top_p       = request.top_p       or (agent.top_p       if agent else None) or settings.gen_top_p
-            num_predict = request.num_predict or settings.gen_num_predict
+            temperature = request.temperature or (agent.temperature if agent else None) or cfg_temperature
+            top_p       = request.top_p       or (agent.top_p       if agent else None) or cfg_top_p
+            num_predict = request.num_predict or cfg_num_predict
             gen_options = {k: v for k, v in {
                 "temperature": temperature,
                 "top_p": top_p,
@@ -987,7 +1004,9 @@ async def run_workflow(wf_id: int, body: dict, session: Session = Depends(get_se
     user_input = body.get("input", "")
     input_fields = body.get("input_fields", {})
     model = body.get("model", "")
-    settings = session.exec(select(SystemSettings)).first()
+    _s = session.exec(select(SystemSettings)).first()
+    cfg_wf_system_prompt = _s.system_prompt if _s else ""
+    cfg_wf_model         = _s.default_model if _s else ""
 
     node_map = {n["id"]: n for n in nodes}
     order = _topo_sort(nodes, edges)
@@ -1024,7 +1043,7 @@ async def run_workflow(wf_id: int, body: dict, session: Session = Depends(get_se
 
                 elif ntype == "ai_prompt":
                     prompt = _resolve(data.get("prompt", ""), outputs)
-                    system = data.get("system", "") or (settings.system_prompt if settings else "")
+                    system = data.get("system", "") or cfg_wf_system_prompt
                     schema_str = data.get("schema", "").strip() if data.get("structured") else ""
                     fmt = None
                     if data.get("structured"):

@@ -1364,85 +1364,6 @@ const App = () => {
           </button>
         </div>
 
-        {/* Sessioni */}
-        <div className="px-4 pt-4 pb-2 shrink-0">
-          <div className="relative">
-            <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-600 pointer-events-none" />
-            <input
-              type="text"
-              value={sessionSearch}
-              onChange={e => setSessionSearch(e.target.value)}
-              placeholder="Cerca conversazioni..."
-              className="w-full bg-zinc-800/60 border border-zinc-700/50 rounded-lg py-1.5 pl-8 pr-7 text-xs text-zinc-300 placeholder:text-zinc-600 outline-none focus:border-orange-500/40 transition-all"
-            />
-            {sessionSearch && (
-              <button onClick={() => setSessionSearch('')}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-600 hover:text-zinc-400 transition-colors">
-                <X size={12} />
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Lista sessioni — scrollabile, prende solo lo spazio disponibile */}
-        <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-3 py-2">
-          <p className="text-[9px] font-bold text-zinc-600 uppercase tracking-widest mb-1 px-2 flex items-center gap-2">
-            {searchResults !== null ? <>{searchResults.length} risultati</> : 'Recenti'}
-            {isSearching && <Loader2 size={9} className="animate-spin" />}
-          </p>
-          <div className="space-y-px">
-            {(searchResults !== null ? searchResults : sessions).map(s => (
-              <div key={s.id} className={`group flex items-center rounded-lg transition-all ${
-                currentSessionId === s.id && activeTab === 'chat'
-                  ? 'bg-orange-600/12 text-orange-400'
-                  : 'text-zinc-500 hover:bg-zinc-700/40 hover:text-zinc-300'
-              }`}>
-                {editingSessionId === s.id ? (
-                  <div className="flex items-center w-full px-2 py-1.5 gap-1.5">
-                    <MessageSquare size={12} className="shrink-0 text-orange-400" />
-                    <input autoFocus value={editingTitle}
-                      onChange={e => setEditingTitle(e.target.value)}
-                      onKeyDown={e => {
-                        if (e.key === 'Enter') saveSessionTitle(s.id, editingTitle);
-                        if (e.key === 'Escape') setEditingSessionId(null);
-                      }}
-                      onBlur={() => saveSessionTitle(s.id, editingTitle)}
-                      className="flex-1 bg-zinc-700/60 border border-zinc-600/60 rounded-md px-2 py-0.5 text-xs text-zinc-200 outline-none focus:border-orange-500/50 min-w-0"
-                    />
-                  </div>
-                ) : (
-                  <>
-                    <button onClick={() => loadSession(s.id)}
-                      className="flex-1 flex items-start gap-2 px-2 py-2 min-w-0">
-                      <MessageSquare size={12} className="mt-0.5 shrink-0 opacity-60" />
-                      <div className="flex flex-col items-start min-w-0 w-full">
-                        <span className="truncate w-full text-xs font-medium leading-snug">
-                          {highlightMatch(s.title || 'Senza titolo', sessionSearch)}
-                        </span>
-                        {s.snippet && (
-                          <span className="text-[10px] text-zinc-600 mt-0.5 leading-snug line-clamp-1 italic">
-                            {highlightMatch(s.snippet, sessionSearch)}
-                          </span>
-                        )}
-                        <span className="text-[10px] text-zinc-700 mt-0.5">{formatDateTime(s.created_at)}</span>
-                      </div>
-                    </button>
-                    <button
-                      onClick={e => { e.stopPropagation(); setEditingSessionId(s.id); setEditingTitle(s.title || ''); }}
-                      className="opacity-0 group-hover:opacity-100 p-1.5 mr-1 text-zinc-600 hover:text-zinc-400 transition-all shrink-0"
-                      title="Rinomina">
-                      <Pencil size={11} />
-                    </button>
-                  </>
-                )}
-              </div>
-            ))}
-            {searchResults !== null && searchResults.length === 0 && !isSearching && (
-              <p className="text-[11px] text-zinc-600 italic text-center py-4">Nessuna conversazione trovata</p>
-            )}
-          </div>
-        </div>
-
         {/* Menu navigazione — sempre visibile in fondo */}
         <nav className="shrink-0 border-t border-zinc-700/40 px-3 py-3 space-y-4">
           {/* Home */}
@@ -1462,6 +1383,7 @@ const App = () => {
             <p className="text-[9px] font-bold text-zinc-600 uppercase tracking-widest mb-1 px-2">Workspace</p>
             <div className="space-y-px">
               {[
+                { tab: 'history',    icon: <History size={15} />,      label: 'Conversazioni' },
                 { tab: 'agents',     icon: <Bot size={15} />,         label: 'Agenti' },
                 { tab: 'prompts',    icon: <BookOpen size={15} />,     label: 'Prompt Library' },
                 { tab: 'simulation', icon: <FlaskConical size={15} />, label: 'Simulazioni' },
@@ -1527,6 +1449,7 @@ const App = () => {
           )}
           <h2 className="text-sm font-semibold text-zinc-300 tracking-wide">
             {activeTab === 'home' ? "Home" :
+             activeTab === 'history' ? "Conversazioni" :
              activeTab === 'chat' ? (currentSessionId ? "Conversazione" : "Nuova Conversazione") :
              activeTab === 'settings' ? "Impostazioni" :
              activeTab === 'tools' ? "Strumenti" :
@@ -1614,6 +1537,97 @@ const App = () => {
                 onNewChat={startNewChat}
               />
             </Suspense>
+          ) : activeTab === 'history' ? (
+            <div className="p-10 max-w-4xl mx-auto space-y-6">
+              {/* Header */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-xl font-bold text-zinc-200">Conversazioni</h2>
+                  <p className="text-xs text-zinc-600 mt-0.5">{sessions.length} {sessions.length === 1 ? 'sessione' : 'sessioni'} salvate</p>
+                </div>
+                <button onClick={startNewChat}
+                  className="flex items-center gap-2 bg-orange-600 hover:bg-orange-500 px-4 py-2 rounded-xl font-semibold text-sm transition-all shadow-md shadow-orange-900/30 group">
+                  <Plus size={15} className="transition-transform group-hover:rotate-90 duration-200" />
+                  Nuova Chat
+                </button>
+              </div>
+
+              {/* Ricerca */}
+              <div className="relative">
+                <Search size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-600 pointer-events-none" />
+                <input
+                  type="text"
+                  value={sessionSearch}
+                  onChange={e => setSessionSearch(e.target.value)}
+                  placeholder="Cerca per titolo o contenuto..."
+                  className="w-full bg-zinc-800/60 border border-zinc-700/50 rounded-xl py-2.5 pl-11 pr-10 text-sm text-zinc-300 placeholder:text-zinc-600 outline-none focus:border-orange-500/40 transition-all"
+                />
+                {isSearching && <Loader2 size={13} className="absolute right-4 top-1/2 -translate-y-1/2 text-zinc-600 animate-spin" />}
+                {sessionSearch && !isSearching && (
+                  <button onClick={() => setSessionSearch('')}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-zinc-600 hover:text-zinc-400 transition-colors">
+                    <X size={13} />
+                  </button>
+                )}
+              </div>
+
+              {/* Lista sessioni */}
+              {searchResults !== null && searchResults.length === 0 && !isSearching ? (
+                <div className="text-center py-16 text-zinc-600 text-sm italic">Nessuna conversazione trovata</div>
+              ) : sessions.length === 0 ? (
+                <div className="text-center py-16 flex flex-col items-center gap-3">
+                  <MessageSquare size={32} className="text-zinc-700" />
+                  <p className="text-zinc-600 text-sm">Nessuna conversazione ancora</p>
+                  <button onClick={startNewChat}
+                    className="flex items-center gap-1.5 bg-orange-600 hover:bg-orange-500 text-sm font-semibold px-4 py-2 rounded-xl transition-all">
+                    <Plus size={13} /> Inizia ora
+                  </button>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-2">
+                  {(searchResults !== null ? searchResults : sessions).map(s => (
+                    <div key={s.id} className={`group flex items-center gap-3 bg-zinc-800/40 border rounded-xl px-5 py-4 transition-all ${
+                      currentSessionId === s.id ? 'border-orange-500/40 bg-orange-500/5' : 'border-zinc-700/30 hover:border-zinc-600/60 hover:bg-zinc-800/70'
+                    }`}>
+                      <div className={`shrink-0 p-2 rounded-lg ${currentSessionId === s.id ? 'bg-orange-500/15' : 'bg-zinc-700/50'}`}>
+                        <MessageSquare size={14} className={currentSessionId === s.id ? 'text-orange-400' : 'text-zinc-500'} />
+                      </div>
+                      {editingSessionId === s.id ? (
+                        <input autoFocus value={editingTitle}
+                          onChange={e => setEditingTitle(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') saveSessionTitle(s.id, editingTitle);
+                            if (e.key === 'Escape') setEditingSessionId(null);
+                          }}
+                          onBlur={() => saveSessionTitle(s.id, editingTitle)}
+                          className="flex-1 bg-zinc-700/60 border border-zinc-600/60 rounded-lg px-3 py-1 text-sm text-zinc-200 outline-none focus:border-orange-500/50"
+                        />
+                      ) : (
+                        <button onClick={() => loadSession(s.id)} className="flex-1 text-left min-w-0">
+                          <p className={`text-sm font-medium truncate ${currentSessionId === s.id ? 'text-orange-300' : 'text-zinc-300 group-hover:text-white'} transition-colors`}>
+                            {highlightMatch(s.title || 'Senza titolo', sessionSearch)}
+                          </p>
+                          {s.snippet && (
+                            <p className="text-xs text-zinc-600 mt-0.5 line-clamp-1 italic">
+                              {highlightMatch(s.snippet, sessionSearch)}
+                            </p>
+                          )}
+                        </button>
+                      )}
+                      <span className="text-[11px] text-zinc-600 shrink-0">
+                        {formatDateTime(s.created_at)}
+                      </span>
+                      <button
+                        onClick={e => { e.stopPropagation(); setEditingSessionId(s.id); setEditingTitle(s.title || ''); }}
+                        className="opacity-0 group-hover:opacity-100 p-1.5 text-zinc-600 hover:text-zinc-300 transition-all shrink-0"
+                        title="Rinomina">
+                        <Pencil size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           ) : activeTab === 'chat' ? (
             <div className="p-8 space-y-6 max-w-5xl mx-auto">
               {messages.length === 0 && !isLoading && (
