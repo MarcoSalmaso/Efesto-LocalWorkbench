@@ -335,6 +335,12 @@ La configurazione viene salvata in `mcp_config.json` (ignorato da git). Copia `m
   - Metadati `last_updated` e `source_url` per ogni chunk in SQLite
   - Interfaccia "Sorgenti attive" nel pannello RAG con stato ultimo aggiornamento, frequenza di refresh e log chunk aggiunti/rimossi
 
+- [ ] **Multi-provider LLM — Supporto a LM Studio, OpenAI e Anthropic** — Attualmente Efesto usa esclusivamente Ollama. L'obiettivo è astrarre il layer LLM in un sistema a provider intercambiabili, selezionabile dalle impostazioni. Architettura prevista:
+  - `OllamaProvider` (attuale), `OpenAIProvider` (copre anche LM Studio via base URL custom), `AnthropicProvider`
+  - Campo `provider` e `api_key` nelle impostazioni globali; `base_url` configurabile per LM Studio
+  - LM Studio e OpenAI API: refactor relativamente semplice (stesso SDK, formato tool già compatibile)
+  - Anthropic: streaming e tool calling con formato diverso; embeddings richiedono un provider separato (Ollama o OpenAI) come fallback per il RAG
+
 ---
 
 *Efesto — Costruisci il tuo Olimpo Digitale*
